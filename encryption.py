@@ -45,4 +45,36 @@ class EncryptionManager:
         Returns:
             str: 解密后的密码
         """
-        return self.cipher.decrypt(encrypted_password.encode()).decode()
+        try:
+            return self.cipher.decrypt(encrypted_password.encode()).decode()
+        except Exception:
+            return "[解密失败]"
+    
+    def encrypt_related_info(self, related_info):
+        """加密关联信息
+        
+        Args:
+            related_info (str): 原始关联信息
+            
+        Returns:
+            str: 加密后的关联信息
+        """
+        if related_info:
+            return self.cipher.encrypt(related_info.encode()).decode()
+        return None
+    
+    def decrypt_related_info(self, encrypted_related_info):
+        """解密关联信息
+        
+        Args:
+            encrypted_related_info (str): 加密后的关联信息
+            
+        Returns:
+            str: 解密后的关联信息
+        """
+        if encrypted_related_info:
+            try:
+                return self.cipher.decrypt(encrypted_related_info.encode()).decode()
+            except Exception:
+                return "[解密失败]"
+        return None

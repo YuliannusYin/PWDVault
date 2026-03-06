@@ -51,11 +51,12 @@ class PasswordBookTab:
         ttk.Label(search_frame, text="搜索范围:").grid(row=1, column=0, sticky=tk.W, pady=5, padx=5)
         
         # 搜索范围选项
-        self.search_id_var = tk.BooleanVar(value=False)
+        self.search_number_var = tk.BooleanVar(value=False)
         self.search_website_var = tk.BooleanVar(value=True)
         self.search_username_var = tk.BooleanVar(value=False)
         self.search_password_var = tk.BooleanVar(value=False)
         self.search_note_var = tk.BooleanVar(value=False)
+        self.search_related_info_var = tk.BooleanVar(value=False)
         
         # 搜索范围复选框
         search_range_frame = ttk.Frame(search_frame)
@@ -65,22 +66,24 @@ class PasswordBookTab:
         def on_password_check():
             if self.search_password_var.get():
                 # 当勾选密码时，取消其他所有选项
-                self.search_id_var.set(False)
+                self.search_number_var.set(False)
                 self.search_website_var.set(False)
                 self.search_username_var.set(False)
                 self.search_note_var.set(False)
+                self.search_related_info_var.set(False)
         
         # 回调函数：处理非密码选项的勾选
         def on_other_check():
             # 当勾选其他选项时，取消密码选项
-            if self.search_id_var.get() or self.search_website_var.get() or self.search_username_var.get() or self.search_note_var.get():
+            if self.search_number_var.get() or self.search_website_var.get() or self.search_username_var.get() or self.search_note_var.get() or self.search_related_info_var.get():
                 self.search_password_var.set(False)
         
-        ttk.Checkbutton(search_range_frame, text="ID", variable=self.search_id_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(search_range_frame, text="编号", variable=self.search_number_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
         ttk.Checkbutton(search_range_frame, text="网站/应用", variable=self.search_website_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
         ttk.Checkbutton(search_range_frame, text="账号/用户名", variable=self.search_username_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
         ttk.Checkbutton(search_range_frame, text="密码", variable=self.search_password_var, command=on_password_check).pack(side=tk.LEFT, padx=10)
         ttk.Checkbutton(search_range_frame, text="备注", variable=self.search_note_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(search_range_frame, text="关联信息", variable=self.search_related_info_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
         
         # 搜索按钮
         search_button = ttk.Button(search_frame, text="搜索", command=self._search_passwords)
@@ -90,19 +93,27 @@ class PasswordBookTab:
         self.tree_frame = ttk.Frame(self.tab)
         self.tree_frame.pack(fill=tk.BOTH, expand=True)
         
-        self.tree = ttk.Treeview(self.tree_frame, columns=('id', 'website', 'username', 'password', 'note'), show='headings')
+        self.tree = ttk.Treeview(self.tree_frame, columns=('id', 'number', 'website', 'username', 'password', 'note', 'sensitivity', 'related_info'), show='headings')
+        # 隐藏ID列
+        self.tree.column('id', width=0, stretch=tk.NO)
         self.tree.heading('id', text='ID')
+        # 显示其他列
+        self.tree.heading('number', text='编号')
         self.tree.heading('website', text='网站/应用')
         self.tree.heading('username', text='账号/用户名')
         self.tree.heading('password', text='密码')
         self.tree.heading('note', text='备注')
+        self.tree.heading('sensitivity', text='敏感性')
+        self.tree.heading('related_info', text='关联信息')
         
         # 设置列宽
-        self.tree.column('id', width=50)
-        self.tree.column('website', width=200)
-        self.tree.column('username', width=150)
-        self.tree.column('password', width=150)
-        self.tree.column('note', width=200)
+        self.tree.column('number', width=80)
+        self.tree.column('website', width=180)
+        self.tree.column('username', width=140)
+        self.tree.column('password', width=140)
+        self.tree.column('note', width=120)
+        self.tree.column('sensitivity', width=80)
+        self.tree.column('related_info', width=150)
         
         self.tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
         
@@ -136,11 +147,12 @@ class PasswordBookTab:
         search_term = self.search_var.get().strip()
         self.search_passwords_callback(
             search_term,
-            self.search_id_var.get(),
             self.search_website_var.get(),
             self.search_username_var.get(),
             self.search_password_var.get(),
-            self.search_note_var.get()
+            self.search_note_var.get(),
+            self.search_number_var.get(),
+            self.search_related_info_var.get()
         )
     
     def _view_password(self):
@@ -203,6 +215,10 @@ class PasswordBookTab:
         if self.masking_var.get():
             # 应用脱敏
             for data in self.original_data:
+                # 检查是否为敏感数据
+                if data[6] == 1:
+                    # 敏感数据，不显示
+                    continue
                 masked_data = self._mask_data(data)
                 self.tree.insert('', tk.END, values=masked_data)
         else:
@@ -214,12 +230,12 @@ class PasswordBookTab:
         """对数据进行脱敏处理
         
         Args:
-            values: 原始数据值
+            values: 原始数据值 (id, number, website, username, password, note, sensitivity, related_info)
         
         Returns:
             脱敏后的数据值
         """
-        id_val, website, username, password, note = values
+        id_val, number, website, username, password, note, sensitivity, related_info = values
         
         # 密码完全脱敏
         masked_password = '*' * len(password)
@@ -238,19 +254,26 @@ class PasswordBookTab:
                 masked_part = '*' * (len(username) - 3)
                 masked_username = f"{username[:3]}{masked_part}"
         
-        return (id_val, website, masked_username, masked_password, note)
+        # 关联信息脱敏
+        masked_related_info = '***' if related_info else ''
+        
+        return (id_val, number, website, masked_username, masked_password, note, sensitivity, masked_related_info)
     
     def add_to_tree(self, values):
         """添加数据到树状视图
         
         Args:
-            values: 数据值
+            values: 数据值 (id, number, website, username, password, note, sensitivity, related_info)
         """
         # 存储原始数据
         self.original_data.append(values)
         
         # 根据脱敏状态决定显示的数据
         if self.masking_var.get():
+            # 检查是否为敏感数据
+            if values[6] == 1:
+                # 敏感数据，不显示
+                return
             masked_data = self._mask_data(values)
             self.tree.insert('', tk.END, values=masked_data)
         else:
