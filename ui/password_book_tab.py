@@ -58,9 +58,17 @@ class PasswordBookTab:
         self.search_note_var = tk.BooleanVar(value=False)
         self.search_related_info_var = tk.BooleanVar(value=False)
         
-        # 搜索范围复选框
+        # 搜索范围复选框 - 分为两行显示
         search_range_frame = ttk.Frame(search_frame)
         search_range_frame.grid(row=1, column=1, pady=5, padx=5, sticky=tk.W)
+        
+        # 第一行搜索选项
+        search_range_row1 = ttk.Frame(search_range_frame)
+        search_range_row1.pack(side=tk.TOP, fill=tk.X)
+        
+        # 第二行搜索选项
+        search_range_row2 = ttk.Frame(search_range_frame)
+        search_range_row2.pack(side=tk.TOP, fill=tk.X)
         
         # 回调函数：处理密码选项的勾选
         def on_password_check():
@@ -78,12 +86,15 @@ class PasswordBookTab:
             if self.search_number_var.get() or self.search_website_var.get() or self.search_username_var.get() or self.search_note_var.get() or self.search_related_info_var.get():
                 self.search_password_var.set(False)
         
-        ttk.Checkbutton(search_range_frame, text="编号", variable=self.search_number_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
-        ttk.Checkbutton(search_range_frame, text="网站/应用", variable=self.search_website_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
-        ttk.Checkbutton(search_range_frame, text="账号/用户名", variable=self.search_username_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
-        ttk.Checkbutton(search_range_frame, text="密码", variable=self.search_password_var, command=on_password_check).pack(side=tk.LEFT, padx=10)
-        ttk.Checkbutton(search_range_frame, text="备注", variable=self.search_note_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
-        ttk.Checkbutton(search_range_frame, text="关联信息", variable=self.search_related_info_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
+        # 第一行复选框
+        ttk.Checkbutton(search_range_row1, text="编号", variable=self.search_number_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(search_range_row1, text="网站/应用", variable=self.search_website_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(search_range_row1, text="账号/用户名", variable=self.search_username_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
+        
+        # 第二行复选框
+        ttk.Checkbutton(search_range_row2, text="密码", variable=self.search_password_var, command=on_password_check).pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(search_range_row2, text="备注", variable=self.search_note_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(search_range_row2, text="关联信息", variable=self.search_related_info_var, command=on_other_check).pack(side=tk.LEFT, padx=10)
         
         # 搜索按钮
         search_button = ttk.Button(search_frame, text="搜索", command=self._search_passwords)
@@ -107,20 +118,34 @@ class PasswordBookTab:
         self.tree.heading('related_info', text='关联信息')
         
         # 设置列宽
-        self.tree.column('number', width=80)
-        self.tree.column('website', width=180)
-        self.tree.column('username', width=140)
-        self.tree.column('password', width=140)
-        self.tree.column('note', width=120)
-        self.tree.column('sensitivity', width=80)
-        self.tree.column('related_info', width=150)
+        self.tree.column('number', width=90)
+        self.tree.column('website', width=200)
+        self.tree.column('username', width=160)
+        self.tree.column('password', width=160)
+        self.tree.column('note', width=140)
+        self.tree.column('sensitivity', width=90)
+        self.tree.column('related_info', width=180)
         
-        self.tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        # 垂直滚动条
+        v_scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscroll=v_scrollbar.set)
         
-        # 滚动条
-        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.configure(yscroll=scrollbar.set)
+        # 水平滚动条
+        h_scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(xscroll=h_scrollbar.set)
+        
+        # 使用grid布局来正确放置树状视图和滚动条
+        self.tree_frame.grid_rowconfigure(0, weight=1)
+        self.tree_frame.grid_columnconfigure(0, weight=1)
+        
+        # 放置树状视图
+        self.tree.grid(row=0, column=0, sticky=tk.NSEW)
+        
+        # 放置垂直滚动条
+        v_scrollbar.grid(row=0, column=1, sticky=tk.NS)
+        
+        # 放置水平滚动条
+        h_scrollbar.grid(row=1, column=0, sticky=tk.EW)
         
         # 操作按钮
         button_frame = ttk.Frame(self.tab)
