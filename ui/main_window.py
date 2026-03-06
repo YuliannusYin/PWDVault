@@ -105,11 +105,12 @@ class MainWindow:
                 data = (row[0], row[1], row[2], row[3], decrypted_password, row[5], row[6], decrypted_related_info)
                 self.password_book_tab.add_to_tree(data)
     
-    def search_passwords(self, search_term, search_website, search_username, search_password, search_note, search_number=False, search_related_info=False):
+    def search_passwords(self, search_term, search_id, search_website, search_username, search_password, search_note, search_number=False, search_related_info=False):
         """搜索密码
         
         Args:
             search_term (str): 搜索关键词
+            search_id (bool): 是否搜索ID
             search_website (bool): 是否搜索网站/应用
             search_username (bool): 是否搜索账号/用户名
             search_password (bool): 是否搜索密码
@@ -120,7 +121,7 @@ class MainWindow:
         # 清空树状视图
         self.password_book_tab.clear_tree()
         # 搜索密码
-        rows = self.db_manager.search_passwords(search_term, search_website, search_username, search_note, search_number, search_related_info)
+        rows = self.db_manager.search_passwords(search_term, search_id, search_website, search_username, search_note, search_number, search_related_info)
         
         # 处理密码搜索的特殊情况
         if search_password and search_term:
