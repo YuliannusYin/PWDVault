@@ -23,6 +23,10 @@ class MainWindow:
         self.root.geometry("800x600")
         self.root.resizable(True, True)
         
+        # 初始化配置
+        from src.core.config import Config
+        Config.load_config()
+        
         # 初始化管理器
         self.db_manager = DatabaseManager()
         self.encryption_manager = EncryptionManager()
