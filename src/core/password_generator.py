@@ -1,4 +1,4 @@
-import random
+import secrets
 import string
 
 class PasswordGenerator:
@@ -36,5 +36,7 @@ class PasswordGenerator:
             raise ValueError("至少选择一种字符类型")
         
         # 生成密码
-        password = ''.join(random.choice(char_set) for _ in range(length))
+        # 使用secrets模块替代random模块，提供更安全的密码生成
+        # secrets模块使用加密安全的伪随机数生成器，适合生成密码等安全相关的随机值
+        password = ''.join(secrets.choice(char_set) for _ in range(length))
         return password

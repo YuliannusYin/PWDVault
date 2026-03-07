@@ -169,7 +169,7 @@ python main.py
 ## 联系方式
 
 - 项目链接：[https://github.com/yourusername/PasswordManager](https://github.com/yourusername/PasswordManager)
-- 问题反馈：[Issues](https://github.com/yourusername/PasswordManager/issues)
+- 问题反馈：[Issues](mailto:mry_2025@outlook.com)
 
 ---
 

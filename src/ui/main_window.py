@@ -120,12 +120,11 @@ class MainWindow:
                 data = (row[0], row[1], row[2], row[3], decrypted_password, row[5], row[6], decrypted_related_info)
                 self.password_book_tab.add_to_tree(data)
     
-    def search_passwords(self, search_term, search_id, search_website, search_username, search_password, search_note, search_number=False, search_related_info=False):
+    def search_passwords(self, search_term, search_website, search_username, search_password, search_note, search_number=False, search_related_info=False):
         """搜索密码
         
         Args:
             search_term (str): 搜索关键词
-            search_id (bool): 是否搜索ID
             search_website (bool): 是否搜索网站/应用
             search_username (bool): 是否搜索账号/用户名
             search_password (bool): 是否搜索密码
@@ -136,7 +135,7 @@ class MainWindow:
         # 清空树状视图
         self.password_book_tab.clear_tree()
         # 搜索密码
-        rows = self.db_manager.search_passwords(search_term, search_id, search_website, search_username, search_note, search_number, search_related_info)
+        rows = self.db_manager.search_passwords(search_term, search_website, search_username, search_note, search_number, search_related_info)
         
         # 处理密码搜索的特殊情况
         if search_password and search_term:
@@ -315,10 +314,10 @@ class MainWindow:
         """复制选中的密码
         
         Args:
-            values: 密码信息
+            values: 密码信息 (id, number, website, username, password, note, sensitivity, related_info)
         """
-        # 获取密码并复制到剪贴板
-        password = values[3]
+        # 获取密码并复制到剪贴板（密码在索引4位置）
+        password = values[4]
         self.root.clipboard_clear()
         self.root.clipboard_append(password)
         messagebox.showinfo("成功", "密码已复制到剪贴板")
