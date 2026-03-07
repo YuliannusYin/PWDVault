@@ -108,13 +108,15 @@ class PasswordBookTab:
         # 隐藏ID列
         self.tree.column('id', width=0, stretch=tk.NO)
         self.tree.heading('id', text='ID')
+        # 隐藏敏感性列
+        self.tree.column('sensitivity', width=0, stretch=tk.NO)
+        self.tree.heading('sensitivity', text='敏感性')
         # 显示其他列
         self.tree.heading('number', text='编号')
         self.tree.heading('website', text='网站/应用')
         self.tree.heading('username', text='账号/用户名')
         self.tree.heading('password', text='密码')
         self.tree.heading('note', text='备注')
-        self.tree.heading('sensitivity', text='敏感性')
         self.tree.heading('related_info', text='关联信息')
         
         # 设置列宽
@@ -123,7 +125,6 @@ class PasswordBookTab:
         self.tree.column('username', width=160)
         self.tree.column('password', width=160)
         self.tree.column('note', width=140)
-        self.tree.column('sensitivity', width=90)
         self.tree.column('related_info', width=180)
         
         # 垂直滚动条

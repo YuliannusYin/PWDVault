@@ -1,5 +1,5 @@
 from cryptography.fernet import Fernet
-from config import Config
+from src.core.config import Config
 
 class EncryptionManager:
     """加密管理类"""

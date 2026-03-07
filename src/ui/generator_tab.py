@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-from password_generator import PasswordGenerator
+from src.core.password_generator import PasswordGenerator
 
 class GeneratorTab:
     """密码生成标签页"""
@@ -29,7 +29,7 @@ class GeneratorTab:
         
         # 密码长度
         ttk.Label(options_frame, text="密码长度:").grid(row=0, column=0, sticky=tk.W, pady=5, padx=5)
-        self.length_var = tk.IntVar(value=18)
+        self.length_var = tk.IntVar(value=16)
         length_spinbox = ttk.Spinbox(options_frame, from_=8, to=32, textvariable=self.length_var, width=10)
         length_spinbox.grid(row=0, column=1, pady=5, padx=5, sticky=tk.W)
         

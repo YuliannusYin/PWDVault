@@ -1,6 +1,6 @@
 import json
 from datetime import datetime
-from config import Config
+from src.core.config import Config
 
 class HistoryManager:
     """历史记录管理类"""
