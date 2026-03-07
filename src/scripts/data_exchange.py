@@ -2,6 +2,7 @@ import json
 import csv
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from pathlib import Path
 from src.core.database import DatabaseManager
 from src.core.encryption import EncryptionManager
 
@@ -52,6 +53,12 @@ class DataExchange:
                         'related_info': decrypted_related_info
                     })
             
+            # 转换为Path对象，确保跨平台兼容性
+            export_path = Path(export_path)
+            
+            # 确保目录存在
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            
             # 根据格式导出
             if export_format == 'json':
                 with open(export_path, 'w', encoding='utf-8') as f:
@@ -94,6 +101,13 @@ class DataExchange:
         """
         try:
             import_data = []
+            
+            # 转换为Path对象，确保跨平台兼容性
+            import_path = Path(import_path)
+            
+            # 验证文件是否存在
+            if not import_path.exists():
+                raise FileNotFoundError(f"导入文件不存在: {import_path}")
             
             # 根据格式导入
             if import_format == 'json':
