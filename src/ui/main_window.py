@@ -1,11 +1,12 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-from ui.input_tab import InputTab
-from ui.generator_tab import GeneratorTab
-from ui.password_book_tab import PasswordBookTab
-from database import DatabaseManager
-from encryption import EncryptionManager
-from history_manager import HistoryManager
+from src.ui.input_tab import InputTab
+from src.ui.generator_tab import GeneratorTab
+from src.ui.password_book_tab import PasswordBookTab
+from src.core.database import DatabaseManager
+from src.core.encryption import EncryptionManager
+from src.core.history_manager import HistoryManager
+from src.scripts.data_exchange_ui import DataExchangeUI
 
 class MainWindow:
     """主窗口类"""
@@ -26,6 +27,12 @@ class MainWindow:
         self.encryption_manager = EncryptionManager()
         self.history_manager = HistoryManager()
         
+        # 初始化数据导入导出UI
+        self.data_exchange_ui = DataExchangeUI(self.root, self.db_manager, self.encryption_manager, self.load_passwords)
+        
+        # 创建菜单
+        self._create_menu()
+        
         # 创建主框架
         self.main_frame = ttk.Frame(self.root, padding="20")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
@@ -40,6 +47,22 @@ class MainWindow:
         # 创建退出按钮
         self.exit_button = ttk.Button(self.main_frame, text="退出程序", command=self.exit_program)
         self.exit_button.pack(pady=10)
+    
+    def _create_menu(self):
+        """创建菜单"""
+        # 创建菜单栏
+        menubar = tk.Menu(self.root)
+        
+        # 创建文件菜单
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="导出数据", command=self.data_exchange_ui.show_export_dialog)
+        file_menu.add_command(label="导入数据", command=self.data_exchange_ui.show_import_dialog)
+        file_menu.add_separator()
+        file_menu.add_command(label="退出", command=self.exit_program)
+        menubar.add_cascade(label="文件", menu=file_menu)
+        
+        # 设置菜单栏
+        self.root.config(menu=menubar)
     
     def _create_tabs(self):
         """创建标签页"""

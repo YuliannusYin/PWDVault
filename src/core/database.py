@@ -1,22 +1,27 @@
 import sqlite3
-from config import Config
+from src.core.config import Config
 
 class DatabaseManager:
     """数据库管理类"""
     
     def __init__(self):
         """初始化数据库管理器"""
+        self.use_memory_db = False
         try:
             db_path = Config.get_db_path()
+            # 确保目录存在
+            db_path.parent.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(str(db_path))
             self.cursor = self.conn.cursor()
             self._create_table()
         except Exception as e:
             print(f"数据库初始化错误: {e}")
             # 创建内存数据库作为 fallback
+            self.use_memory_db = True
             self.conn = sqlite3.connect(':memory:')
             self.cursor = self.conn.cursor()
             self._create_table()
+            print("使用内存数据库作为 fallback")
     
     def _create_table(self):
         """创建密码表"""
