@@ -36,13 +36,9 @@ class SettingsTab:
         self.path_entry = ttk.Entry(self.settings_frame, textvariable=self.path_var, width=60)
         self.path_entry.grid(row=0, column=1, pady=10, padx=10)
         
-        # 浏览按钮
-        browse_button = ttk.Button(self.settings_frame, text="浏览", command=self._browse_path)
-        browse_button.grid(row=0, column=2, pady=10, padx=10)
-        
-        # 保存按钮
-        save_button = ttk.Button(self.settings_frame, text="保存设置", command=self._save_settings)
-        save_button.grid(row=1, column=1, pady=20, padx=10, sticky=tk.E)
+        # 移动按钮
+        move_button = ttk.Button(self.settings_frame, text="移动", command=self._move_storage)
+        move_button.grid(row=0, column=2, pady=10, padx=10)
         
         # 重置按钮
         reset_button = ttk.Button(self.settings_frame, text="重置为默认", command=self._reset_settings)
@@ -65,6 +61,60 @@ class SettingsTab:
         # 开发者模式（预留）
         ttk.Label(reserved_frame, text="开发者模式:", font=('Arial', 10, 'bold')).grid(row=2, column=0, sticky=tk.W, pady=10, padx=10)
         ttk.Label(reserved_frame, text="功能开发中...").grid(row=2, column=1, sticky=tk.W, pady=10, padx=10)
+    
+    def _move_storage(self):
+        """移动存储位置"""
+        # 打开文件夹选择对话框
+        selected_path = filedialog.askdirectory(title="选择新的存储路径")
+        if not selected_path:
+            return
+        
+        # 验证路径有效性
+        if not self._validate_path(selected_path):
+            messagebox.showerror("错误", "请选择有效的存储路径")
+            return
+        
+        # 迁移数据
+        try:
+            # 获取当前存储路径
+            current_path = str(Config.get_app_data_dir())
+            
+            # 如果选择的路径与当前路径相同，直接返回
+            if selected_path == current_path:
+                messagebox.showinfo("提示", "新路径与当前路径相同，无需移动")
+                return
+            
+            # 复制数据文件
+            import shutil
+            import os
+            
+            # 确保目标目录存在
+            os.makedirs(selected_path, exist_ok=True)
+            
+            # 复制数据库文件
+            db_path = Config.get_db_path()
+            if os.path.exists(db_path):
+                shutil.copy2(db_path, os.path.join(selected_path, 'passwords.db'))
+            
+            # 复制密钥文件
+            key_path = Config.get_key_path()
+            if os.path.exists(key_path):
+                shutil.copy2(key_path, os.path.join(selected_path, 'key.key'))
+            
+            # 复制历史记录文件
+            history_path = Config.get_history_path()
+            if os.path.exists(history_path):
+                shutil.copy2(history_path, os.path.join(selected_path, 'password_history.json'))
+            
+            # 更新配置文件
+            Config.set_app_data_dir(selected_path)
+            
+            # 更新界面显示
+            self.path_var.set(selected_path)
+            
+            messagebox.showinfo("成功", f"存储位置已成功移动到: {selected_path}\n请重启应用以应用新的存储路径")
+        except Exception as e:
+            messagebox.showerror("错误", f"移动存储位置失败: {str(e)}")
     
     def _browse_path(self):
         """浏览选择存储路径"""
