@@ -15,6 +15,8 @@ PasswordManager 是一个基于 Python 和 Tkinter 开发的本地密码管理�
 - **数据脱敏**：可切换密码和账号的显示状态，保护隐私
 - **历史记录**：保存最近生成的密码，方便重复使用
 - **剪贴板操作**：快速复制密码到剪贴板，方便使用
+- **文件管理**：支持密码数据的导入导出功能
+- **程序设置**：允许设置默认存储路径，支持路径浏览和验证
 
 ## 技术架构
 
@@ -28,21 +30,38 @@ PasswordManager 是一个基于 Python 和 Tkinter 开发的本地密码管理�
 ### 项目结构
 ```
 PasswordManager/
-├── ui/
-│   ├── __pycache__/
-│   ├── generator_tab.py     # 密码生成标签页
-│   ├── input_tab.py         # 密码录入标签页
-│   ├── main_window.py       # 主窗口
-│   └── password_book_tab.py # 密码本标签页
+├── src/
+│   ├── core/
+│   │   ├── __pycache__/
+│   │   ├── __init__.py
+│   │   ├── config.py                # 配置管理
+│   │   ├── database.py              # 数据库操作
+│   │   ├── encryption.py            # 密码加密
+│   │   ├── history_manager.py       # 历史记录管理
+│   │   └── password_generator.py    # 密码生成
+│   ├── scripts/
+│   │   ├── __pycache__/
+│   │   ├── __init__.py
+│   │   ├── clear_data.py            # 数据清理脚本
+│   │   ├── data_exchange.py         # 数据交换功能
+│   │   ├── data_exchange_ui.py      # 数据交换界面
+│   │   ├── generate_test_data.py    # 测试数据生成
+│   │   └── test_data_exchange.py    # 数据交换测试
+│   ├── ui/
+│   │   ├── __pycache__/
+│   │   ├── __init__.py
+│   │   ├── file_management_tab.py   # 文件管理标签页
+│   │   ├── generator_tab.py         # 密码生成标签页
+│   │   ├── input_tab.py             # 密码录入标签页
+│   │   ├── main_window.py           # 主窗口
+│   │   ├── password_book_tab.py     # 密码本标签页
+│   │   └── settings_tab.py          # 程序设置标签页
+│   └── __init__.py
 ├── __pycache__/
-├── config.py                # 配置管理
-├── database.py              # 数据库操作
-├── encryption.py            # 密码加密
-├── history_manager.py       # 历史记录管理
-├── main.py                  # 程序入口
-├── password_generator.py    # 密码生成
-├── password_history.json    # 密码历史记录
-└── README.md                # 项目说明文档
+├── .gitignore                      # Git忽略文件
+├── LICENSE                         # 许可证文件
+├── README.md                       # 项目说明文档
+└── main.py                         # 程序入口
 ```
 
 ### 核心模块
@@ -52,6 +71,8 @@ PasswordManager/
 3. **EncryptionManager**：加密管理类，负责密码的加密和解密
 4. **PasswordGenerator**：密码生成器类，生成随机密码
 5. **HistoryManager**：历史记录管理类，管理生成的密码历史
+6. **FileManagementTab**：文件管理标签页，支持密码数据的导入导出
+7. **SettingsTab**：程序设置标签页，管理应用配置和存储路径
 
 ## 安装步骤
 
@@ -99,6 +120,19 @@ python main.py
    - 删除：点击"删除"按钮删除密码
    - 复制密码：点击"复制密码"按钮将密码复制到剪贴板
 4. 可以开启"数据脱敏"功能，隐藏密码和部分账号信息
+
+### 文件管理
+1. 在"文件管理"标签页中，可以进行密码数据的导入导出操作
+2. 支持将密码数据导出为JSON或CSV格式
+3. 支持从JSON或CSV文件导入密码数据
+4. 导入前会进行数据验证，确保数据格式正确
+
+### 程序设置
+1. 在"程序设置"标签页中，可以设置默认存储路径
+2. 可以通过"浏览"按钮选择新的存储路径
+3. 系统会自动验证路径的有效性
+4. 可以点击"重置为默认"按钮恢复默认存储路径
+5. 预留了黑色模式、多语言支持和开发者模式的设置区域，将在未来版本中实现
 
 ## 安全说明
 
