@@ -6,9 +6,9 @@
 import json
 import os
 import tempfile
-from database import DatabaseManager
-from encryption import EncryptionManager
-from scripts.data_exchange import DataExchange
+from src.core.database import DatabaseManager
+from src.core.encryption import EncryptionManager
+from src.scripts.data_exchange import DataExchange
 
 
 def test_export_import():
