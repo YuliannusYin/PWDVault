@@ -4,6 +4,7 @@ from src.ui.input_tab import InputTab
 from src.ui.generator_tab import GeneratorTab
 from src.ui.password_book_tab import PasswordBookTab
 from src.ui.file_management_tab import FileManagementTab
+from src.ui.settings_tab import SettingsTab
 from src.core.database import DatabaseManager
 from src.core.encryption import EncryptionManager
 from src.core.history_manager import HistoryManager
@@ -75,6 +76,9 @@ class MainWindow:
             self.encryption_manager,
             self.load_passwords
         )
+        
+        # 创建程序设置标签页
+        self.settings_tab = SettingsTab(self.notebook)
         
         # 加载初始数据
         self.load_passwords()
