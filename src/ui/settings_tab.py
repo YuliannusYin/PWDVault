@@ -6,13 +6,15 @@ import os
 class SettingsTab:
     """程序设置标签页"""
     
-    def __init__(self, parent):
+    def __init__(self, parent, cache_manager=None):
         """初始化设置标签页
         
         Args:
             parent: 父窗口
+            cache_manager: 缓存管理器实例
         """
         self.parent = parent
+        self.cache_manager = cache_manager
         self.tab = ttk.Frame(parent)
         parent.add(self.tab, text="程序设置")
         
@@ -109,6 +111,27 @@ class SettingsTab:
         # 开发者模式（预留）
         ttk.Label(reserved_frame, text="开发者模式:", font=('Arial', 10, 'bold')).grid(row=1, column=0, sticky=tk.W, pady=10, padx=10)
         ttk.Label(reserved_frame, text="功能开发中...").grid(row=1, column=1, sticky=tk.W, pady=10, padx=10)
+        
+        # 缓存监控按钮（新增）
+        ttk.Label(reserved_frame, text="缓存监控:", font=('Arial', 10, 'bold')).grid(row=2, column=0, sticky=tk.W, pady=10, padx=10)
+        cache_monitor_button = ttk.Button(reserved_frame, text="查看缓存状态", command=self._show_cache_monitor)
+        cache_monitor_button.grid(row=2, column=1, sticky=tk.W, pady=10, padx=10)
+    
+    def _show_cache_monitor(self):
+        """显示缓存监控窗口"""
+        # 导入CacheMonitor类
+        from src.ui.cache_monitor import CacheMonitor
+        
+        # 显示缓存监控窗口
+        if self.cache_manager:
+            monitor = CacheMonitor(self.parent.master, self.cache_manager)
+            monitor.show_monitor()
+        else:
+            # 如果没有缓存管理器实例，创建一个新的
+            from src.core.cache import CacheManager
+            cache_manager = CacheManager()
+            monitor = CacheMonitor(self.parent.master, cache_manager)
+            monitor.show_monitor()
     
     def _save_settings(self):
         """保存设置"""
