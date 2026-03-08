@@ -5,9 +5,11 @@ from src.ui.generator_tab import GeneratorTab
 from src.ui.password_book_tab import PasswordBookTab
 from src.ui.file_management_tab import FileManagementTab
 from src.ui.settings_tab import SettingsTab
+from src.ui.cache_monitor import CacheMonitor
 from src.core.database import DatabaseManager
 from src.core.encryption import EncryptionManager
 from src.core.history_manager import HistoryManager
+from src.core.cache import CacheManager
 
 class MainWindow:
     """主窗口类"""
@@ -31,6 +33,7 @@ class MainWindow:
         self.db_manager = DatabaseManager()
         self.encryption_manager = EncryptionManager()
         self.history_manager = HistoryManager()
+        self.cache_manager = CacheManager(max_size=50, default_ttl=1800)  # 缓存50条记录，30分钟过期
         
         # 创建主框架
         self.main_frame = ttk.Frame(self.root, padding="20")
@@ -82,7 +85,7 @@ class MainWindow:
         )
         
         # 创建程序设置标签页
-        self.settings_tab = SettingsTab(self.notebook)
+        self.settings_tab = SettingsTab(self.notebook, self.cache_manager)
         
         # 加载初始数据
         self.load_passwords()
@@ -105,14 +108,28 @@ class MainWindow:
         encrypted_related_info = self.encryption_manager.encrypt_related_info(related_info)
         # 保存到数据库
         self.db_manager.add_password(website, username, encrypted_password, note, number, sensitivity, encrypted_related_info)
+        # 清除缓存
+        self.cache_manager.delete('all_passwords')
         messagebox.showinfo("成功", "密码保存成功")
     
     def load_passwords(self):
         """加载密码"""
+        # 尝试从缓存获取
+        cached_passwords = self.cache_manager.get('all_passwords')
+        
+        if cached_passwords:
+            # 从缓存加载
+            self.password_book_tab.clear_tree()
+            for data in cached_passwords:
+                self.password_book_tab.add_to_tree(data)
+            return
+        
+        # 缓存未命中，从数据库加载
         # 清空树状视图
         self.password_book_tab.clear_tree()
         # 加载所有密码
         rows = self.db_manager.get_all_passwords()
+        passwords_data = []
         for row in rows:
             # 确保row有足够的元素
             if len(row) >= 8:
@@ -123,6 +140,10 @@ class MainWindow:
                 # 构造数据 tuple: (id, number, website, username, password, note, sensitivity, related_info)
                 data = (row[0], row[1], row[2], row[3], decrypted_password, row[5], row[6], decrypted_related_info)
                 self.password_book_tab.add_to_tree(data)
+                passwords_data.append(data)
+        
+        # 缓存结果
+        self.cache_manager.set('all_passwords', passwords_data)
     
     def search_passwords(self, search_term, search_website, search_username, search_password, search_note, search_number=False, search_related_info=False):
         """搜索密码
@@ -136,6 +157,20 @@ class MainWindow:
             search_number (bool): 是否搜索编号
             search_related_info (bool): 是否搜索关联信息
         """
+        # 生成缓存键
+        cache_key = f"search:{search_term}:{search_website}:{search_username}:{search_password}:{search_note}:{search_number}:{search_related_info}"
+        
+        # 尝试从缓存获取
+        cached_results = self.cache_manager.get(cache_key)
+        
+        if cached_results:
+            # 从缓存加载
+            self.password_book_tab.clear_tree()
+            for data in cached_results:
+                self.password_book_tab.add_to_tree(data)
+            return
+        
+        # 缓存未命中，执行搜索
         # 清空树状视图
         self.password_book_tab.clear_tree()
         # 搜索密码
@@ -161,7 +196,8 @@ class MainWindow:
                         filtered_rows.append(row)
             rows = filtered_rows
         
-        # 显示搜索结果
+        # 显示搜索结果并缓存
+        search_results = []
         for row in rows:
             # 确保row有足够的元素
             if len(row) >= 8:
@@ -172,6 +208,10 @@ class MainWindow:
                 # 构造数据 tuple: (id, number, website, username, password, note, sensitivity, related_info)
                 data = (row[0], row[1], row[2], row[3], decrypted_password, row[5], row[6], decrypted_related_info)
                 self.password_book_tab.add_to_tree(data)
+                search_results.append(data)
+        
+        # 缓存搜索结果
+        self.cache_manager.set(cache_key, search_results, ttl=600)  # 搜索结果缓存10分钟
     
     def view_password(self, values):
         """查看密码详情
@@ -296,6 +336,9 @@ class MainWindow:
             encrypted_related_info = self.encryption_manager.encrypt_related_info(related_info)
             self.db_manager.update_password(values[0], website, username, encrypted_password, note, number, sensitivity, encrypted_related_info)
             
+            # 清除缓存
+            self.cache_manager.delete('all_passwords')
+            
             messagebox.showinfo("成功", "密码更新成功")
             edit_window.destroy()
             self.load_passwords()
@@ -311,6 +354,8 @@ class MainWindow:
         """
         if messagebox.askyesno("确认删除", f"确定要删除 {values[1]} 的密码吗？"):
             self.db_manager.delete_password(values[0])
+            # 清除缓存
+            self.cache_manager.delete('all_passwords')
             messagebox.showinfo("成功", "密码删除成功")
             self.load_passwords()
     
