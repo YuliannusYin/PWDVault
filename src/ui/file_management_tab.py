@@ -71,9 +71,6 @@ class FileManagementTab:
         
         # 恢复原始父窗口
         self.data_exchange_ui.root = original_parent
-        
-        # 销毁临时窗口
-        temp_window.destroy()
     
     def _show_import_dialog(self):
         """显示导入对话框"""
@@ -92,6 +89,3 @@ class FileManagementTab:
         
         # 恢复原始父窗口
         self.data_exchange_ui.root = original_parent
-        
-        # 销毁临时窗口
-        temp_window.destroy()

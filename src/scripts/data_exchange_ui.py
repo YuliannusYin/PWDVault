@@ -94,7 +94,7 @@ class DataExchangeUI:
             
             # 执行导出
             export_window.update()
-            success = self.data_exchange.export_data(export_format, export_path)
+            success, error_msg = self.data_exchange.export_data(export_format, export_path)
             
             # 停止进度条
             progress_bar.stop()
@@ -104,7 +104,7 @@ class DataExchangeUI:
                 messagebox.showinfo("成功", f"数据已成功导出到\n{export_path}")
                 export_window.destroy()
             else:
-                messagebox.showerror("错误", "导出数据失败")
+                messagebox.showerror("错误", f"导出数据失败: {error_msg}")
         
         export_button = ttk.Button(export_window, text="导出", command=export_data, width=15)
         export_button.pack(pady=20)
