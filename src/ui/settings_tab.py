@@ -2,6 +2,13 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from src.core.config import Config
 import os
+import subprocess
+
+# 确保应用数据目录存在
+app_data_dir = Config.get_app_data_dir()
+
+# 手动创建目录，确保万无一失
+os.makedirs(app_data_dir, exist_ok=True)
 
 class SettingsTab:
     """程序设置标签页"""
@@ -62,11 +69,19 @@ class SettingsTab:
         # 路径显示
         self.path_var = tk.StringVar(value=str(Config.get_app_data_dir()))
         self.path_entry = ttk.Entry(self.settings_frame, textvariable=self.path_var, width=60, state='disabled')
-        self.path_entry.grid(row=0, column=1, pady=10, padx=10)
+        self.path_entry.grid(row=0, column=1, pady=10, padx=10, columnspan=2)
+        
+        # 按钮框架
+        button_frame = ttk.Frame(self.settings_frame)
+        button_frame.grid(row=1, column=1, pady=10, padx=10, sticky=tk.W)
+        
+        # 打开文件夹按钮
+        open_folder_button = ttk.Button(button_frame, text="打开文件夹", command=self._open_folder)
+        open_folder_button.pack(side=tk.LEFT, padx=5)
         
         # 重置按钮
-        reset_button = ttk.Button(self.settings_frame, text="重置为默认", command=self._reset_settings)
-        reset_button.grid(row=1, column=1, pady=20, padx=10, sticky=tk.E)
+        reset_button = ttk.Button(button_frame, text="重置为默认", command=self._reset_settings)
+        reset_button.pack(side=tk.LEFT, padx=5)
     
     def _create_general_settings(self):
         """创建常规设置区域"""
@@ -116,6 +131,11 @@ class SettingsTab:
         ttk.Label(reserved_frame, text="缓存监控:", font=('Arial', 10, 'bold')).grid(row=2, column=0, sticky=tk.W, pady=10, padx=10)
         cache_monitor_button = ttk.Button(reserved_frame, text="查看缓存状态", command=self._show_cache_monitor)
         cache_monitor_button.grid(row=2, column=1, sticky=tk.W, pady=10, padx=10)
+        
+        # 日志查看按钮（新增）
+        ttk.Label(reserved_frame, text="日志查看:", font=('Arial', 10, 'bold')).grid(row=3, column=0, sticky=tk.W, pady=10, padx=10)
+        log_viewer_button = ttk.Button(reserved_frame, text="查看日志", command=self._show_logs)
+        log_viewer_button.grid(row=3, column=1, sticky=tk.W, pady=10, padx=10)
     
     def _show_cache_monitor(self):
         """显示缓存监控窗口"""
@@ -133,6 +153,15 @@ class SettingsTab:
             monitor = CacheMonitor(self.parent.master, cache_manager)
             monitor.show_monitor()
     
+    def _show_logs(self):
+        """显示日志查看窗口"""
+        # 导入LogViewer类
+        from src.ui.log_viewer import LogViewer
+        
+        # 显示日志查看窗口
+        viewer = LogViewer(self.parent.master)
+        viewer.show_logs()
+    
     def _save_settings(self):
         """保存设置"""
         try:
@@ -147,6 +176,62 @@ class SettingsTab:
         except Exception as e:
             messagebox.showerror("错误", f"保存设置失败: {str(e)}")
     
+    def _open_folder(self):
+        """打开存储文件夹"""
+        try:
+            # 导入Logger类
+            from src.core.logger import Logger
+            logger = Logger()
+            
+            # 获取存储路径
+            path = self.path_var.get()
+            
+            # 验证路径有效性
+            if not path:
+                messagebox.showerror("错误", "存储路径为空")
+                logger.log("打开文件夹", "失败", path=path, error="存储路径为空")
+                return
+            
+            # 验证路径是否存在
+            if not os.path.exists(path):
+                messagebox.showerror("错误", "存储路径不存在")
+                logger.log("打开文件夹", "失败", path=path, error="存储路径不存在")
+                return
+            
+            # 验证路径是否为目录
+            if not os.path.isdir(path):
+                messagebox.showerror("错误", "存储路径不是有效的目录")
+                logger.log("打开文件夹", "失败", path=path, error="存储路径不是有效的目录")
+                return
+            
+            # 验证访问权限
+            try:
+                os.listdir(path)
+            except PermissionError:
+                messagebox.showerror("错误", "没有访问该路径的权限")
+                logger.log("打开文件夹", "失败", path=path, error="没有访问该路径的权限")
+                return
+            
+            # 打开文件资源管理器
+            if os.name == 'nt':  # Windows
+                # 在Windows中，explorer命令可能返回非零值但仍成功打开文件夹
+                subprocess.run(['explorer', path], check=False)
+            elif os.name == 'posix':  # macOS or Linux
+                if os.uname().sysname == 'Darwin':  # macOS
+                    subprocess.run(['open', path], check=True)
+                else:  # Linux
+                    subprocess.run(['xdg-open', path], check=True)
+            
+            # 记录成功日志
+            logger.log("打开文件夹", "成功", path=path)
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"打开文件夹失败: {str(e)}")
+            # 导入Logger类
+            from src.core.logger import Logger
+            logger = Logger()
+            logger.log("打开文件夹", "失败", path=self.path_var.get(), error=str(e))
+
     def _reset_settings(self):
         """重置为默认设置"""
         try:
