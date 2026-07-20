@@ -376,3 +376,4 @@ cmake --build build --target package_inno
 - [ARCHITECTURE.md](ARCHITECTURE.md)：架构设计与模块分层
 - [IPC_PROTOCOL.md](IPC_PROTOCOL.md)：IPC 协议帧格式与命令列表
 - [SECURITY.md](SECURITY.md)：威胁模型与加密方案
+- [DEVELOPMENT.md](DEVELOPMENT.md)：Git 工作流、提交规范、发布流程

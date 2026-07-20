@@ -1,113 +1,220 @@
 # PwdVault
 
-一个模仿火绒安全软件架构的本地密码管理器，基于 C++20 + Qt 6 实现。所有密码数据
-保存在用户本地，不与任何云端服务通信，旨在提供透明、可信、可控的密码安全管理
-体验。
+一个安全、透明、可控的本地密码管理器。所有密码数据保存在你的电脑本地，不与任何云端服务通信。
+
+---
 
 ## 项目简介
 
-PwdVault 将传统密码管理器重构为模仿火绒安全软件的双进程架构：
+PwdVault 帮助你安全地存储和管理各类账号密码。与传统云端密码管理器不同，它完全运行在你的本地电脑上，密码数据永远不会离开你的设备。
 
-- **UI 进程**（`pwdvault-ui.exe`）：基于 Qt 6 Widgets 的图形界面，负责用户交互、
-  密码本展示、密码生成与设置。
-- **服务进程**（`pwdvault-service.exe`）：后台控制台进程，承载所有敏感操作
-  （加解密、数据库读写、主密码验证），通过命名管道（Named Pipe）与 UI 通信。
+**核心特点：**
 
-这种分离使核心加密逻辑与 UI 解耦，便于后续将服务进程以系统服务方式部署、隔离
-权限，并降低 UI 崩溃对敏感内存的影响面。
+- **本地优先**：所有数据存储在本地，无需联网，不依赖任何云服务
+- **强加密保护**：使用 AES-256-GCM 加密算法保护每一条密码
+- **主密码机制**：只需记住一个主密码，即可访问所有密码
+- **双进程架构**：借鉴安全软件设计，核心加密逻辑与界面分离，提升安全性
+- **零遥测**：不收集任何使用数据，不发送任何分析信息
 
-## 核心特性
+---
 
-- **双进程架构**：UI / Service 解耦，命名管道 IPC（OVERLAPPED I/O，多客户端并发）
-- **AES-256-GCM 加密**：每个 entry 独立 IV + Tag，防重放攻击
-- **Argon2id 密钥派生**：抵御 GPU/ASIC 暴力破解（libsodium 实现）
-- **SQLite 持久化**：单文件数据库，便于备份与迁移
-- **零云端**：默认不联网，不依赖任何远程服务
-- **C++20 现代代码**：`std::span`、`std::expected` 风格 Result 类型、隐藏符号导出
+## 功能特性
 
-## 构建要求
+### 密码管理
 
-| 工具          | 版本                | 说明                                       |
-|---------------|---------------------|--------------------------------------------|
-| Visual Studio | 2022 (MSVC v143)    | 推荐，需支持 C++20                          |
-| Qt            | 6.5+                | 模块：Widgets、Network、Concurrent          |
-| vcpkg         | 最新                | manifest mode，自动拉取 OpenSSL/libsodium 等 |
-| CMake         | 3.20+               | 3.27+ 可启用 CPack INNO 内置生成器          |
-| Inno Setup    | 6.x（可选）          | 用于生成 Windows 安装包                     |
+- 添加、编辑、删除密码条目
+- 按网站、用户名、备注搜索
+- 查看密码详情（可切换显示/隐藏）
+- 一键复制密码或用户名到剪贴板
 
-## 构建步骤
+### 密码生成器
 
-> 完整构建指南详见 [`docs/BUILD.md`](docs/BUILD.md)；架构设计见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)；
-> IPC 协议见 [`docs/IPC_PROTOCOL.md`](docs/IPC_PROTOCOL.md)；安全设计见 [`docs/SECURITY.md`](docs/SECURITY.md)。
+- 自定义密码长度（4-128 位）
+- 选择字符集（大写、小写、数字、符号）
+- 排除易混字符（如 `i`、`l`、`1`、`O`、`0`）
+- 实时显示密码强度评估
+- 一键复制生成的密码
 
-### 1. 配置环境变量
+### 安全设计
 
-```powershell
-$env:VCPKG_ROOT = "<vcpkg 路径>"
-$env:CMAKE_PREFIX_PATH = "<Qt 6 安装路径>\msvc2022_64"
-```
+- 主密码使用 Argon2id 算法派生密钥，抵御暴力破解
+- 连续 5 次输入错误主密码将临时锁定 5 分钟
+- 主密码仅存在于内存中，关闭程序后即清除
+- 服务进程在无操作 30 秒后自动退出，减少敏感数据驻留时间
 
-### 2. 配置 & 构建
+---
 
-```powershell
-cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-cmake --build build --config Release
-```
+## 下载与安装
 
-构建产物位于 `build/bin/Release/`：
+### 方式一：下载安装包（推荐）
 
-- `pwdvault-ui.exe`：GUI 入口
-- `pwdvault-service.exe`：服务进程入口
+1. 前往 [Releases 页面](https://github.com/yourusername/PWDVault/releases)（待发布）
+2. 下载最新的 `pwdvault-<version>-setup.exe`
+3. 双击运行安装程序，按提示完成安装
+4. 安装完成后，从开始菜单或桌面快捷方式启动 PwdVault
 
-### 3. 运行
+**系统要求：**
+- Windows 10 64 位或更高版本
+- 不需要预装其他运行时（安装包已包含）
 
-直接双击 `pwdvault-ui.exe` 即可启动；UI 会自动拉起服务进程。
+### 方式二：便携版（绿色软件）
 
-### 4. 生成安装包（可选）
+从 Releases 页面下载 `pwdvault-<version>.zip`，解压到任意目录后运行 `pwdvault-ui.exe` 即可。
 
-安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php) 后：
+### 方式三：自行构建
 
-```powershell
-cmake --build build --target package_inno
-```
+适用于开发者或希望从源码编译的用户，请参阅 [AGENTS.md](AGENTS.md) 与 [docs/BUILD.md](docs/BUILD.md)。
 
-输出位置：`build/package/pwdvault-0.1.0-setup.exe`
+---
+
+## 快速上手
+
+### 首次启动
+
+1. 启动 PwdVault 后，会提示你设置主密码
+2. 输入一个强密码（建议至少 12 位，包含大小写字母、数字、符号）
+3. 再次输入确认
+4. 主密码设置完成，进入主界面
+
+> **重要提示**：主密码是访问你所有密码的唯一钥匙，**无法找回**。请务必牢记，或保存在安全的地方（如离线密码本、密码提示卡）。
+
+### 添加密码条目
+
+1. 点击左侧侧边栏的「录入」
+2. 填写网站/应用名称、账号/用户名、密码
+3. （可选）填写备注
+4. 点击「保存」
+
+你也可以点击「生成密码」按钮，跳转到生成器视图快速生成一个强密码。
+
+### 查找密码
+
+1. 点击侧边栏的「密码本」
+2. 在顶部搜索框输入关键词
+3. 选择搜索字段（全部/网站/用户名/备注）
+4. 点击「搜索」按钮，或直接在列表中浏览
+
+### 编辑或删除密码
+
+1. 在密码本中选择一条记录
+2. 点击「编辑」修改字段后保存，或点击「删除」移除该条目
+3. 删除前会弹出确认对话框，避免误操作
+
+### 使用密码生成器
+
+1. 点击侧边栏的「生成器」
+2. 调整密码长度与字符集
+3. 点击「生成密码」
+4. 查看强度指示器（红色=弱、黄色=中等、绿色=强）
+5. 点击「复制到剪贴板」即可使用
+
+---
 
 ## 数据存储位置
 
-应用运行时数据保存在：
+PwdVault 的所有数据保存在以下位置：
 
 ```
 %APPDATA%\PwdVault\
-├── vault.db          # SQLite 数据库（加密后的 entry）
-├── vault.meta        # 主密码 KEK 元数据（Argon2id salt、验证 tag 等）
-└── logs\             # 运行日志
+├── vault.db          # 加密的密码数据库
+└── vault.meta        # 主密码相关元数据
 ```
 
-卸载应用**不会**删除 `%APPDATA%\PwdVault\`，避免用户数据意外丢失。
+完整路径通常是：`C:\Users\<你的用户名>\AppData\Roaming\PwdVault\`
 
-## 项目结构
+### 备份与恢复
 
-```
-PwdVault/
-├── cmake/                  # CMake 辅助模块（CompilerWarnings、QtDeployment）
-├── packaging/             # Inno Setup 脚本
-├── src/
-│   ├── sdk/                # SDK 库（core/crypto/storage/generator/protocol）
-│   ├── service/            # pwdvault-service 进程
-│   └── ui/                 # pwdvault-ui 进程
-├── tests/                  # GoogleTest 单元测试
-├── legacy-python/          # 原 Python 实现（已归档，不再维护）
-├── CMakeLists.txt
-├── LICENSE
-└── README.md
-```
+- **备份**：复制整个 `%APPDATA%\PwdVault\` 目录到安全位置（如外部硬盘、加密 U 盘）
+- **恢复**：将备份的目录覆盖回原位置即可
+- **卸载影响**：卸载 PwdVault **不会**删除 `%APPDATA%\PwdVault\`，你的数据是安全的
+
+> **注意**：`vault.db` 与 `vault.meta` 必须一起备份，缺一不可。仅备份 `vault.db` 无法解密。
+
+---
+
+## 安全说明
+
+### 加密方案
+
+- **密码加密**：AES-256-GCM（每条密码独立 IV 与认证标签，防重放攻击）
+- **主密码派生**：Argon2id（抵御 GPU/ASIC 暴力破解）
+- **密钥层次**：主密码 → Argon2id → KEK → 主密钥 → 加密每条密码
+
+### 安全建议
+
+1. **设置强主密码**：至少 12 位，包含大小写字母、数字、符号，不要使用生日、姓名等易猜信息
+2. **定期备份**：将 `%APPDATA%\PwdVault\` 备份到加密的外部存储
+3. **不要分享主密码**：任何情况下都不要将主密码告诉他人
+4. **不要分享 `vault.meta` 文件**：该文件包含主密码的验证信息
+5. **使用全盘加密**：建议启用 Windows BitLocker，进一步保护本地数据
+
+### 已知限制
+
+- 无法防御物理攻击（如冷启动攻击、硬件级内存取证）
+- 未使用 TPM/SGX 等硬件安全模块
+- 主密码遗忘后**无法**恢复数据（这是安全设计的代价）
+
+更多技术细节请参阅 [docs/SECURITY.md](docs/SECURITY.md)。
+
+---
+
+## 常见问题
+
+### 忘记主密码怎么办？
+
+很遗憾，由于 PwdVault 采用端到端加密设计，主密码仅存在于你的内存中，**无法找回**。如果你有数据备份，可以从备份恢复；否则只能重置整个密码库（会丢失所有已保存的密码）。
+
+**重置方法：**
+1. 关闭 PwdVault
+2. 删除 `%APPDATA%\PwdVault\` 目录下的 `vault.db` 与 `vault.meta`
+3. 重新启动 PwdVault，会提示你设置新的主密码
+
+### 主密码输入错误被锁定了怎么办？
+
+连续 5 次输入错误主密码后，系统会锁定 5 分钟。请等待锁定时间结束后再尝试，或重启程序（重启后仍需等待锁定时间过去）。
+
+### 杀毒软件误报怎么办？
+
+由于 PwdVault 使用加密与命名管道通信，少数杀毒软件可能误报。你可以：
+1. 将 PwdVault 安装目录加入杀毒软件白名单
+2. 从 [Releases 页面](https://github.com/yourusername/PWDVault/releases) 重新下载官方版本
+3. 自行从源码构建以确认安全性
+
+### 数据可以同步到手机吗？
+
+当前版本不支持跨设备同步。所有数据仅保存在你的电脑本地。后续版本可能提供加密导出/导入功能，便于手动迁移。
+
+### 可以从其他密码管理器导入数据吗？
+
+当前支持从旧版 Python PwdVault 迁移数据，使用 `pwdvault-migrate.exe` 工具。从 1Password、Bitwarden 等其他工具导入的功能在规划中。
+
+### 如何升级到新版本？
+
+直接下载新版本安装包运行安装，会自动覆盖旧版本。你的数据（`%APPDATA%\PwdVault\`）不会被影响。建议升级前先备份。
+
+---
+
+## 反馈与支持
+
+- **问题反馈**：[GitHub Issues](https://github.com/yourusername/PWDVault/issues)
+- **联系方式**：mry_2025@outlook.com
+- **贡献代码**：请参阅 [AGENTS.md](AGENTS.md) 了解开发指南
+
+---
 
 ## 许可证
 
 本项目采用 [MIT 许可证](LICENSE)。
 
-## 备注
+---
 
-原 Python + Tkinter 实现已归档到 `legacy-python/` 目录，仅作历史参考，不再维护。
-所有新特性均在 C++/Qt 6 代码库上开发。
+## 致谢
+
+PwdVault 的设计借鉴了 [火绒安全软件](https://www.huorong.cn/) 的双进程架构理念，使用以下开源项目：
+
+- [Qt 6](https://www.qt.io/) — GUI 框架
+- [OpenSSL](https://www.openssl.org/) — 加密库
+- [libsodium](https://libsodium.org/) — Argon2id 密钥派生
+- [SQLite](https://www.sqlite.org/) — 嵌入式数据库
+
+感谢以上项目的贡献者。
