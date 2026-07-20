@@ -190,11 +190,10 @@ core::Result<std::string> FernetDecoder::decrypt(const std::string& base64_token
             make_crypto_error("FernetDecoder: EVP_DecryptInit_ex failed"));
     }
 
-    // PKCS7 padding 会让 OpenSSL 在 EVP_DecryptFinal_ex 阶段校验：
-    // 设置 EVP_CIPHER_CTX_FLAG_PAD_DEFAULT（即 EVP will not auto-remove padding）
-    // 后我们手动处理 padding。但 OpenSSL 默认即 EVP_PADDING_PKCS7（自动去填充），
-    // 直接使用默认即可，若 padding 非法 final 会返回 0。
-    std::vector<uint8_t> plaintext(ct_len + 16, 0);  // 预留最多一个 block
+    // 禁用 OpenSSL 自动 padding，由我们手动处理 PKCS7 去填充（符合 Fernet 规范）。
+    EVP_CIPHER_CTX_set_padding(ctx.get(), 0);
+
+    std::vector<uint8_t> plaintext(ct_len, 0);  // 禁用 padding 时输出长度等于输入长度
     int plain_len = 0;
     if (EVP_DecryptUpdate(ctx.get(), plaintext.data(), &plain_len,
                           ct_ptr, static_cast<int>(ct_len)) != 1) {
@@ -204,17 +203,39 @@ core::Result<std::string> FernetDecoder::decrypt(const std::string& base64_token
 
     int final_len = 0;
     if (EVP_DecryptFinal_ex(ctx.get(), plaintext.data() + plain_len, &final_len) != 1) {
-        // PKCS7 padding 非法或解密失败
         secure_zero(plaintext);
         return core::Result<std::string>::Err(
-            make_crypto_error("FernetDecoder: EVP_DecryptFinal_ex failed (bad padding)"));
+            make_crypto_error("FernetDecoder: EVP_DecryptFinal_ex failed"));
     }
 
     const size_t total_plain = static_cast<size_t>(plain_len) + static_cast<size_t>(final_len);
     plaintext.resize(total_plain);
 
-    // 6. 拷贝为 std::string 并清零中间缓冲
-    std::string result(reinterpret_cast<const char*>(plaintext.data()), total_plain);
+    // 6. 手动去 PKCS7 padding
+    //    Fernet 规范：明文经 PKCS7 填充至 16 字节倍数后加密，padding 长度 1..16。
+    if (total_plain == 0 || total_plain % 16 != 0) {
+        secure_zero(plaintext);
+        return core::Result<std::string>::Err(
+            make_crypto_error("FernetDecoder: plaintext length not aligned to 16 bytes"));
+    }
+    const uint8_t pad = plaintext[total_plain - 1];
+    if (pad == 0 || pad > 16 || static_cast<size_t>(pad) > total_plain) {
+        secure_zero(plaintext);
+        return core::Result<std::string>::Err(
+            make_crypto_error("FernetDecoder: invalid PKCS7 padding length"));
+    }
+    // 校验所有 padding 字节都等于 pad
+    for (size_t i = total_plain - pad; i < total_plain; ++i) {
+        if (plaintext[i] != pad) {
+            secure_zero(plaintext);
+            return core::Result<std::string>::Err(
+                make_crypto_error("FernetDecoder: invalid PKCS7 padding bytes"));
+        }
+    }
+    const size_t actual_plain_len = total_plain - pad;
+
+    // 7. 拷贝为 std::string 并清零中间缓冲
+    std::string result(reinterpret_cast<const char*>(plaintext.data()), actual_plain_len);
     secure_zero(plaintext);
 
     return core::Result<std::string>::Ok(std::move(result));

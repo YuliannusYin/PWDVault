@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 
+#include "core/Result.h"
 #include "core/Types.h"
 #include "protocol/Messages.h"
 

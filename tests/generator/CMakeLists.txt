@@ -16,5 +16,4 @@ target_link_libraries(test_password_generator
 )
 
 # 集成到 ctest
-include(GTest)
-gtest_discover_tests(test_password_generator)
+add_test(NAME test_password_generator COMMAND test_password_generator)

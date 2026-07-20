@@ -20,6 +20,7 @@ add_library(PwdVault::SdkCore ALIAS pwdvault-sdk-core)
 
 target_include_directories(pwdvault-sdk-core INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
 # 强制 C++20（std::span 在 Types.h 中使用）

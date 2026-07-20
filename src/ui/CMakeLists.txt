@@ -17,7 +17,10 @@ add_executable(pwdvault-ui WIN32
     views/SettingsView.cpp
     views/EditEntryDialog.cpp
 )
-target_include_directories(pwdvault-ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/views)
+target_include_directories(pwdvault-ui PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/views
+)
 target_link_libraries(pwdvault-ui
     PRIVATE
         PwdVault::Sdk

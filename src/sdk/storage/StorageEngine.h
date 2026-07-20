@@ -37,6 +37,7 @@
 
 // 前置声明 sqlite3，避免在头文件中暴露 SQLite 头给外部包含方。
 struct sqlite3;
+struct sqlite3_stmt;
 
 namespace pwdvault::storage {
 

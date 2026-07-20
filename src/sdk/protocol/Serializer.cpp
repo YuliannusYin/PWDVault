@@ -447,7 +447,9 @@ template <> core::Result<PingResponse> deserialize<PingResponse>(core::ByteSpan 
 template <> core::ByteVec serialize<ShutdownResponse>(const ShutdownResponse&) {
     return {};
 }
-template <> core::Result<ShutdownResponse> deserialize<ShutdownResponse>(core::ByteSpan) {
+template <> core::Result<ShutdownResponse> deserialize<ShutdownResponse>(core::ByteSpan data) {
+    // 空响应：data 必须为空。若非空则可能是 ErrorResponse，让调用方回退解析。
+    if (!data.empty()) return core::Result<ShutdownResponse>::Err(make_error("deserialize<ShutdownResponse>: expected empty payload"));
     return core::Result<ShutdownResponse>::Ok(ShutdownResponse{});
 }
 
@@ -480,7 +482,9 @@ template <> core::Result<UnlockResponse> deserialize<UnlockResponse>(core::ByteS
 template <> core::ByteVec serialize<LockResponse>(const LockResponse&) {
     return {};
 }
-template <> core::Result<LockResponse> deserialize<LockResponse>(core::ByteSpan) {
+template <> core::Result<LockResponse> deserialize<LockResponse>(core::ByteSpan data) {
+    // 空响应：data 必须为空。若非空则可能是 ErrorResponse，让调用方回退解析。
+    if (!data.empty()) return core::Result<LockResponse>::Err(make_error("deserialize<LockResponse>: expected empty payload"));
     return core::Result<LockResponse>::Ok(LockResponse{});
 }
 
@@ -505,7 +509,9 @@ template <> core::Result<UpdateEntryResponse> deserialize<UpdateEntryResponse>(c
 template <> core::ByteVec serialize<RemoveEntryResponse>(const RemoveEntryResponse&) {
     return {};
 }
-template <> core::Result<RemoveEntryResponse> deserialize<RemoveEntryResponse>(core::ByteSpan) {
+template <> core::Result<RemoveEntryResponse> deserialize<RemoveEntryResponse>(core::ByteSpan data) {
+    // 空响应：data 必须为空。若非空则可能是 ErrorResponse，让调用方回退解析。
+    if (!data.empty()) return core::Result<RemoveEntryResponse>::Err(make_error("deserialize<RemoveEntryResponse>: expected empty payload"));
     return core::Result<RemoveEntryResponse>::Ok(RemoveEntryResponse{});
 }
 
@@ -576,18 +582,29 @@ template <> core::ByteVec serialize<EstimateStrengthResponse>(const EstimateStre
 }
 template <> core::Result<EstimateStrengthResponse> deserialize<EstimateStrengthResponse>(core::ByteSpan data) {
     Reader r(data); EstimateStrengthResponse v;
-    if (!r.read_i64(v.strength_bits)) return core::Result<EstimateStrengthResponse>::Err(make_error("deserialize<EstimateStrengthResponse>: data too short"));
+    int64_t tmp = 0;
+    if (!r.read_i64(tmp)) return core::Result<EstimateStrengthResponse>::Err(make_error("deserialize<EstimateStrengthResponse>: data too short"));
+    v.strength_bits = static_cast<int>(tmp);
     return core::Result<EstimateStrengthResponse>::Ok(v);
 }
 
+// ErrorResponse 在序列化时加魔数前缀，使其字节布局与任何正常响应不兼容。
+// 这样客户端先尝试期望响应类型反序列化时会失败（read_string 因长度过大而越界），
+// 从而回退到 ErrorResponse 解析。
+constexpr uint32_t kErrorResponseMagic = 0xDEADBEEFu;
+
 template <> core::ByteVec serialize<ErrorResponse>(const ErrorResponse& v) {
     Writer w;
+    w.write_u32(kErrorResponseMagic);
     w.write_u32(static_cast<uint32_t>(v.code));
     w.write_string(v.message);
     return w.take();
 }
 template <> core::Result<ErrorResponse> deserialize<ErrorResponse>(core::ByteSpan data) {
     Reader r(data); ErrorResponse v;
+    uint32_t magic = 0;
+    if (!r.read_u32(magic)) return core::Result<ErrorResponse>::Err(make_error("deserialize<ErrorResponse>: malformed"));
+    if (magic != kErrorResponseMagic) return core::Result<ErrorResponse>::Err(make_error("deserialize<ErrorResponse>: magic mismatch"));
     uint32_t code = 0;
     if (!r.read_u32(code)) return core::Result<ErrorResponse>::Err(make_error("deserialize<ErrorResponse>: malformed"));
     v.code = static_cast<core::ErrorCode>(code);

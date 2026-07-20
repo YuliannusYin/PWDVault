@@ -135,7 +135,7 @@ TEST(InMemoryStorageEngineTest, RemoveEntryNotFoundReturnsError) {
     pwdvault::storage::InMemoryStorageEngine engine;
     auto rm = engine.remove_entry(99999);
     ASSERT_FALSE(rm.ok());
-    EXPECT_EQ(rm.error().code, pwdvault::core::ErrorCode::NotFound);
+    EXPECT_EQ(rm.code, pwdvault::core::ErrorCode::NotFound);
 }
 
 TEST(InMemoryStorageEngineTest, ListEntriesReturnsAll) {

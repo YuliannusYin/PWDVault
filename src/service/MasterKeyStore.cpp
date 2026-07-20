@@ -233,7 +233,8 @@ core::Result<core::ByteVec> MasterKeyStore::unlock(const std::string& master_pas
     }
 
     // 3. 校验长度并转回 ByteVec
-    core::ByteVec master_key(dec_result->begin(), dec_result->end());
+    const auto* mk_ptr = reinterpret_cast<const std::byte*>(dec_result->data());
+    core::ByteVec master_key(mk_ptr, mk_ptr + dec_result->size());
     if (master_key.size() != kMasterKeyLen) {
         secure_zero(master_key);
         return core::Result<core::ByteVec>::Err(

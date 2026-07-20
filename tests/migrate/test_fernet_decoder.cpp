@@ -100,13 +100,14 @@ std::string fernet_encode(const std::vector<uint8_t>& signing_key,
                   reinterpret_cast<const uint8_t*>(plaintext.data()) + plaintext.size());
     padded.insert(padded.end(), pad_len, static_cast<uint8_t>(pad_len));
 
-    // 2. AES-128-CBC encrypt
+    // 2. AES-128-CBC encrypt（禁用 OpenSSL 自动 padding，因为已手动 PKCS7 padding）
     std::vector<uint8_t> ciphertext(padded.size(), 0);
     {
         EvpCtxPtr ctx(EVP_CIPHER_CTX_new());
         EXPECT_NE(ctx, nullptr);
         EVP_EncryptInit_ex(ctx.get(), EVP_aes_128_cbc(), nullptr,
                            encryption_key.data(), iv.data());
+        EVP_CIPHER_CTX_set_padding(ctx.get(), 0);  // 禁用自动 padding
         int out_len = 0;
         EVP_EncryptUpdate(ctx.get(), ciphertext.data(), &out_len,
                           padded.data(), static_cast<int>(padded.size()));

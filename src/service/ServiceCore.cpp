@@ -108,7 +108,7 @@ bool ServiceCore::is_in_cooldown() const {
     return lock_until_ > std::chrono::steady_clock::now();
 }
 
-core::ByteVec ServiceCore::make_error(ErrorCode code, std::string message) const {
+core::ByteVec ServiceCore::make_error(core::ErrorCode code, std::string message) const {
     protocol::ErrorResponse resp;
     resp.code = code;
     resp.message = std::move(message);
