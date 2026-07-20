@@ -136,12 +136,10 @@ endif()
 # 10. 安装规则
 #     - 可执行目标由 src/ui/CMakeLists.txt 与 src/service/CMakeLists.txt
 #       通过 install(TARGETS ... RUNTIME DESTINATION bin) 自行注册，此处不重复。
-#     - 通过 deploy_qt_runtime() 在安装阶段调用 windeployqt 部署 Qt 运行时。
+#     - Qt 运行时部署（deploy_qt_runtime）在 src/ui/CMakeLists.txt 中调用，
+#       因为 add_custom_command(TARGET ...) 要求目标在创建它的同一目录注册。
 #     - 安装 LICENSE 文件（优先根目录，缺失时回退 legacy-python/LICENSE）。
 # -----------------------------------------------------------------------------
-# 注意：deploy_qt_runtime 必须在 src/ 子目录处理完成后调用，因为目标
-# pwdvault-ui 是在 src/ui/CMakeLists.txt 中定义的。
-deploy_qt_runtime(pwdvault-ui)
 
 # 安装 LICENSE 文件：优先使用根目录 LICENSE，否则回退到 legacy-python/LICENSE
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")

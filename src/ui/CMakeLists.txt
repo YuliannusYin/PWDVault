@@ -35,4 +35,9 @@ set_target_properties(pwdvault-ui PROPERTIES
 # 安装规则
 install(TARGETS pwdvault-ui RUNTIME DESTINATION bin)
 
+# 部署 Qt 运行时：POST_BUILD 复制 platforms 插件 + install 阶段 windeployqt
+# 必须在此目录调用，因为 add_custom_command(TARGET ...) 要求目标在创建它的
+# 同一目录注册。
+deploy_qt_runtime(pwdvault-ui)
+
 message(STATUS "PwdVault: src/ui/ 配置完成（pwdvault-ui 可执行目标）")
