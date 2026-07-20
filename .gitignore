@@ -5,6 +5,7 @@ __pycache__/
 *.pyd
 
 # IDE
+.trae/
 .idea/
 .vscode/
 *.swp
