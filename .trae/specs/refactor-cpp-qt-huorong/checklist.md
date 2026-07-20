@@ -1,0 +1,22 @@
+- [x] 原 Python 代码已归档至 `legacy-python/`，根目录 `src/` 已清空待新代码使用
+- [ ] 顶层 `CMakeLists.txt` 可成功 configure 与 build（`cmake -B build && cmake --build build`）
+- [x] `vcpkg.json` 正确声明 OpenSSL、libsodium、SQLite3、GoogleTest 依赖
+- [x] SDK 核心类型与抽象接口（`IStorageEngine`、`ICryptoEngine`、`IPasswordGenerator`）已定义
+- [ ] 加密引擎支持 AES-256-GCM 加解密与 Argon2id 密钥派生，单元测试通过
+- [ ] 存储引擎支持含新字段（`created_at`、`updated_at`、`iv`、`tag`）的 CRUD，单元测试通过
+- [ ] 密码生成引擎使用 cryptographically secure RNG，单元测试验证随机性与字符集约束
+- [x] IPC 协议定义了所有必要命令枚举与消息结构
+- [x] 服务进程可作为命名管道服务端运行，支持多客户端并发
+- [x] 服务进程实现主密码登录、解锁与保活超时退出逻辑
+- [x] UI 进程启动时能自动拉起服务进程并建立 IPC 连接
+- [x] 登录视图支持首次设置主密码与后续验证两种流程
+- [x] 密码本视图支持列表、搜索、详情、编辑、删除
+- [x] 录入视图可添加新密码并经服务加密存储
+- [x] 生成器视图可配置参数生成密码并复制到剪贴板
+- [x] UI 处理服务断连场景，提供重连提示
+- [x] `cmake --install` 与 `windeployqt` 正确部署 Qt 运行时与插件
+- [x] CPack 可生成可执行的 Windows 安装包（.exe），支持安装/卸载（采用手写 .iss 方案，命令为 `cmake --build build --target package_inno`）
+- [x] 端到端集成测试覆盖 UI 调用服务的核心流程
+- [x] `docs/` 包含架构设计文档与开发者构建指南
+- [x] 根目录 `README.md` 已更新为新版项目说明
+- [x] 旧数据迁移工具（如实现）能正确转换旧 `passwords.db` 到新 `vault.db`

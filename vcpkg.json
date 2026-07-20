@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "pwdvault",
+  "version-string": "0.1.0",
+  "description": "PwdVault - 模仿火绒安全软件架构的 C++ + Qt 6 密码管理器",
+  "dependencies": [
+    "openssl",
+    "libsodium",
+    "sqlite3",
+    "gtest"
+  ]
+}
