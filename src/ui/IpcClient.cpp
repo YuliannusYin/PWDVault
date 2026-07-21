@@ -273,14 +273,6 @@ core::Result<protocol::PingResponse> IpcClient::ping() {
         protocol::CommandId::Ping, protocol::PingRequest{});
 }
 
-core::Result<protocol::LoginResponse> IpcClient::login(const std::string& password, bool is_first_time) {
-    protocol::LoginRequest req;
-    req.password = password;
-    req.is_first_time = is_first_time;
-    return send_request<protocol::LoginRequest, protocol::LoginResponse>(
-        protocol::CommandId::Login, req);
-}
-
 core::Result<protocol::UnlockResponse> IpcClient::unlock(const std::string& password) {
     protocol::UnlockRequest req;
     req.password = password;
@@ -291,6 +283,33 @@ core::Result<protocol::UnlockResponse> IpcClient::unlock(const std::string& pass
 core::Result<protocol::LockResponse> IpcClient::lock() {
     return send_request<protocol::LockRequest, protocol::LockResponse>(
         protocol::CommandId::Lock, protocol::LockRequest{});
+}
+
+core::Result<protocol::EnableProgramPasswordResponse> IpcClient::enable_program_password(const std::string& password) {
+    protocol::EnableProgramPasswordRequest req;
+    req.password = password;
+    return send_request<protocol::EnableProgramPasswordRequest, protocol::EnableProgramPasswordResponse>(
+        protocol::CommandId::EnableProgramPassword, req);
+}
+
+core::Result<protocol::DisableProgramPasswordResponse> IpcClient::disable_program_password(const std::string& password) {
+    protocol::DisableProgramPasswordRequest req;
+    req.password = password;
+    return send_request<protocol::DisableProgramPasswordRequest, protocol::DisableProgramPasswordResponse>(
+        protocol::CommandId::DisableProgramPassword, req);
+}
+
+core::Result<protocol::ChangeProgramPasswordResponse> IpcClient::change_program_password(const std::string& old_password, const std::string& new_password) {
+    protocol::ChangeProgramPasswordRequest req;
+    req.old_password = old_password;
+    req.new_password = new_password;
+    return send_request<protocol::ChangeProgramPasswordRequest, protocol::ChangeProgramPasswordResponse>(
+        protocol::CommandId::ChangeProgramPassword, req);
+}
+
+core::Result<protocol::GetVaultStatusResponse> IpcClient::get_vault_status() {
+    return send_request<protocol::GetVaultStatusRequest, protocol::GetVaultStatusResponse>(
+        protocol::CommandId::GetVaultStatus, protocol::GetVaultStatusRequest{});
 }
 
 core::Result<protocol::AddEntryResponse> IpcClient::add_entry(const core::PasswordEntry& entry) {

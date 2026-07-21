@@ -7,7 +7,8 @@
 //   - 右侧 QStackedWidget：4 个功能视图
 //   - 顶部菜单栏：文件（退出）、帮助（关于）
 //   - 底部状态栏：连接状态 + 最后操作时间
-//   - 启动时先显示 LoginView（首次设置或解锁），成功后才进入主界面
+//   - 启动时查询 vault 状态：若程序密码已启用且已锁定，则显示 UnlockView
+//   - 程序密码未启用时直接进入主界面（明文模式）
 //   - 当 IPC 断开时弹窗提示并尝试重连
 // =============================================================================
 #pragma once
@@ -22,7 +23,7 @@ class QStackedWidget;
 namespace pwdvault::ui {
 
 class IpcClient;
-class LoginView;
+class UnlockView;
 class PasswordBookView;
 class InputView;
 class GeneratorView;
@@ -41,10 +42,13 @@ private slots:
     void on_ipc_disconnected();
     void on_ipc_error(const QString& message);
 
-    // 登录/解锁流程
-    void on_login_succeeded();
-    void on_login_rejected();
+    // 解锁流程
+    void on_unlock_succeeded();
+    void on_unlock_rejected();
     void on_lock_requested();
+
+    // 程序密码状态变化（由 SettingsView 触发）
+    void on_password_state_changed(bool enabled);
 
     // 视图间联动
     void on_entry_added(int64_t id);
@@ -59,12 +63,12 @@ private:
     void update_last_op_time();
     void attempt_reconnect();
 
-    /// 检测是否为首次使用（密码库未初始化）。
-    /// 通过调用 unlock("") 探测：若返回 NotFound 且消息含 "not initialized" 则为首次。
-    bool detect_first_time() const;
+    /// 查询 vault 状态判断是否需要显示解锁视图。
+    /// 程序密码已启用且密码库已锁定时返回 true。
+    bool should_show_unlock() const;
 
-    /// 显示登录视图（首次设置或解锁模式）。
-    void show_login(bool is_first_time);
+    /// 显示解锁视图（模态对话框）。
+    void show_unlock();
 
     /// 切换到指定侧边栏视图。
     void switch_to_view(int row);
@@ -81,8 +85,8 @@ private:
     GeneratorView* generator_view_ = nullptr;
     SettingsView* settings_view_ = nullptr;
 
-    // 登录视图（模态层，按需创建/销毁）
-    LoginView* login_view_ = nullptr;
+    // 解锁视图（模态层，按需创建/销毁）
+    UnlockView* unlock_view_ = nullptr;
 
     // 标记生成器是否由 InputView 请求打开（用于生成后自动切回录入视图）
     bool generator_from_input_ = false;

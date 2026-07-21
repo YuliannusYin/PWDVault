@@ -82,18 +82,18 @@ flowchart LR
         CE[CryptoEngine]
         SE[StorageEngine]
         PG[PasswordGenerator]
-        MKS[MasterKeyStore]
+        PPS[ProgramPasswordStore]
         IS --> SC
         SC --> CE
         SC --> SE
         SC --> PG
-        SC --> MKS
-        MKS --> CE
+        SC --> PPS
+        PPS --> CE
     end
 
     IC <-->|命名管道 \\.\pipe\PwdVaultService| IS
     SE <-->|SQLite BLOB| DB[("vault.db")]
-    MKS <-->|二进制 meta 文件| META[("vault.meta")]
+    PPS <-->|二进制 meta 文件| META[("vault.meta")]
 ```
 
 ## 3. SDK 模块分层
@@ -153,9 +153,11 @@ CMake 目标命名约定：`pwdvault-<module>`（小写连字符），别名 `Pw
    switch (header.command) {
      case CommandId::AddEntry:
        deserialize<AddEntryRequest>(payload)
-       → encrypt_entry(entry)        // 用 entry_crypto_ 加密 password 字段
-         → AES-256-GCM encrypt → [IV(12) || ciphertext || tag(16)]
-         → 拆分 iv / password(密文) / tag
+       → encrypt_entry(entry)
+         // 加密模式：用 entry_crypto_ 加密 password 字段
+         //   → AES-256-GCM encrypt → [IV(12) || ciphertext || tag(16)]
+         //   → 拆分 iv / password(密文) / tag
+         // 明文模式：password 保持明文，iv / tag 留空
        → storage_->add_entry(encrypted_entry)
          → SQLite INSERT INTO entries(...)
        → 构造 AddEntryResponse{明文 entry + 分配的 id + 时间戳}
@@ -179,14 +181,24 @@ CMake 目标命名约定：`pwdvault-<module>`（小写连字符），别名 `Pw
    失败 → 弹出错误提示
 ```
 
-## 5. 主密码与密钥层次结构
+## 5. 程序密码与密钥层次结构
 
-PwdVault 采用三层密钥派生，最大限度保护用户数据：
+PwdVault 支持两种工作模式：
+
+- **明文模式**（默认，未启用程序密码）：`vault.db` 中 `password` 字段以明文 BLOB 存储，
+  `iv` / `tag` 列为空 BLOB，**不生成** `vault.meta` 文件。ServiceCore 启动时自动
+  `unlocked=true`，UI 直接进入主界面。所有 CRUD 操作无需解锁。
+- **加密模式**（已启用程序密码）：采用三层密钥派生保护用户数据，需 `Unlock` 后才能访问。
+
+两种模式可在设置中通过 `EnableProgramPassword` / `DisableProgramPassword` 命令相互切换，
+切换时 service 会对所有现有条目执行批量重加密 / 重解密。
+
+加密模式下的密钥派生层次：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ 用户主密码（master_password）                                │
-│   - 用户在 LoginView 输入的明文口令                          │
+│ 用户程序密码（program_password）                             │
+│   - 用户在 UnlockView / ProgramPasswordDialog 输入的明文口令│
 │   - 仅在 UI 内存中短暂存在，IPC 传输后由 service 持有        │
 └────────────────────────────────┬────────────────────────────┘
                                  │ Argon2id（libsodium）
@@ -197,16 +209,17 @@ PwdVault 采用三层密钥派生，最大限度保护用户数据：
 ┌─────────────────────────────────────────────────────────────┐
 │ KEK（Key Encryption Key，32 字节）                          │
 │   - 仅存在于 service 进程内存                                │
-│   - 用于加密 / 解密 master_key                              │
+│   - 用于加密 / 解密 encryption_key                          │
 │   - 函数返回前用 sodium_memzero 清零                       │
 └────────────────────────────────┬────────────────────────────┘
-                                 │ AES-256-GCM（KEK 作为 master_key）
+                                 │ AES-256-GCM（KEK 作为密钥）
                                  ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ master_key（32 字节，entry 加密用主密钥）                    │
+│ encryption_key（32 字节，entry 加密用对称密钥）              │
 │   - 在 service 内存中存活（unlock 后 → lock 前）            │
 │   - 持久化为 [IV(12) || ciphertext(32) || tag(16)] 于 vault.meta│
 │   - lock() 或进程退出时 sodium_memzero 清零                 │
+│   - 修改程序密码时仅重新包装本密钥，条目无需重新加密         │
 └────────────────────────────────┬────────────────────────────┘
                                  │ AES-256-GCM（每个 entry 独立 IV）
                                  ▼
@@ -219,7 +232,7 @@ PwdVault 采用三层密钥派生，最大限度保护用户数据：
 
 ### Meta 文件格式
 
-`vault.meta` 采用自定义二进制格式：
+`vault.meta` 采用自定义二进制格式（仅加密模式存在）：
 
 | 偏移 | 长度      | 字段             | 说明                                       |
 |------|-----------|------------------|--------------------------------------------|
@@ -230,16 +243,37 @@ PwdVault 采用三层密钥派生，最大限度保护用户数据：
 | 26   | 4         | blob_len         | `60`（12 IV + 32 密文 + 16 tag）           |
 | 30   | blob_len  | encrypted_blob   | `[IV(12) || ciphertext(32) || tag(16)]`    |
 
+### 模式切换流程
+
+**EnableProgramPassword（明文 → 加密）**：
+1. 调用 `ProgramPasswordStore::initialize`：生成 salt + KEK + encryption_key，写入 vault.meta
+2. ServiceCore 设置 `encryption_key`，切换到加密模式
+3. 遍历所有现有明文条目，逐条用 AES-256-GCM 加密后 update
+4. 任一步骤失败：回滚（删除 vault.meta，恢复明文条目）
+
+**DisableProgramPassword（加密 → 明文）**：
+1. 用提供的程序密码验证身份（解锁状态）
+2. 遍历所有加密条目，逐条解密为明文后 update（iv/tag 清空）
+3. 调用 `ProgramPasswordStore::destroy` 删除 vault.meta
+4. 切换到明文模式，`unlocked=true`
+
+**ChangeProgramPassword（仅加密模式）**：
+1. 验证 old_password
+2. 调用 `ProgramPasswordStore::change_password`：用新密码重新派生 KEK，重新包装 encryption_key
+3. encryption_key 本身不变，**条目无需重新加密**
+
 ## 6. 安全设计
 
 详见 [SECURITY.md](SECURITY.md)。要点：
 
-- **KEK 仅内存**：KEK 在 `MasterKeyStore::initialize / unlock` 函数返回前通过 `sodium_memzero` 清零。
-- **敏感数据清零**：master_key、KEK、派生密钥、明文密码字符串均用 `sodium_memzero` 清零。
+- **KEK 仅内存**：KEK 在 `ProgramPasswordStore::initialize / unlock / change_password` 函数返回前通过 `sodium_memzero` 清零。
+- **敏感数据清零**：encryption_key、KEK、派生密钥、明文密码字符串均用 `sodium_memzero` 清零。
 - **GCM 认证**：每条 entry 的 password 字段独立 IV + tag，GCM 校验失败即拒绝解密。
 - **常量时间比较**：`CryptoEngine::verify_password` 使用 `sodium_memcmp`，避免时序侧信道。
-- **登录限速**：连续 5 次主密码错误后锁定 5 分钟，期间任何 unlock 尝试直接返回失败。
+- **解锁限速**：连续 5 次程序密码错误后锁定 5 分钟，期间任何 unlock 尝试直接返回失败。
 - **自动退出**：service 进程 30 秒无客户端连接即自动退出，缩小敏感数据存活窗口。
+- **明文模式权衡**：明文模式便利但无加密保护，仅适用于低敏感场景；启用程序密码后所有数据
+  落盘前均经 AES-256-GCM 加密。
 
 ## 7. 可扩展性
 

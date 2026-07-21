@@ -11,6 +11,22 @@ __pycache__/
 *.swp
 *.swo
 *~
+*.ntvs*
+*.njsproj
+
+# Qt Creator / Qt project files
+*.pro.user*
+*.qbs.user*
+*.qmlproject.user*
+.qmake.stash
+*.qmlc
+*.qmltc
+# Qt build artifacts (moc/uic/rcc generated)
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*_moc.cpp
 
 # System
 .DS_Store
@@ -36,39 +52,55 @@ ENV/
 build/
 dist/
 *.egg-info/
-
-# CMake / vcpkg build artifacts
 out/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
+compile_commands.json
+CMakeUserPresets.json
+install_manifest.txt
+
+# MSVC / Visual Studio
 *.vcxproj
 *.vcxproj.filters
 *.vcxproj.user
 *.sln
 *.suo
-CMakeUserPresets.json
-install_manifest.txt
-compile_commands.json
+
+# CTest / testing artifacts
+Testing/Temporary/
+
+# Build binaries & symbols
+*.exe
+*.dll
+*.lib
+*.pdb
+*.exp
+*.ilk
+*.idb
+*.obj
+
+# vcpkg local installs
 vcpkg_installed/
+vcpkg/buildtrees/
+vcpkg/packages/
+vcpkg/downloads/
+vcpkg/portsbackup/
+
+# Inno Setup output
+packaging/Output/
+*.iss.compiled
 
 # Database
 *.db
 *.sqlite3
 
-# Editor directories and files
-.idea/
-.vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-# OS generated files
-Thumbs.db
-.DS_Store
-
 # Local configuration
 config.local.py
+
+# Backup / merge files
+*.bak
+*.backup
+*.orig
+*.rej

@@ -2,14 +2,14 @@
 // =============================================================================
 // MainWindow.cpp
 //
-// PwdVault 主窗口实现。构建侧边栏 + 内容区，处理菜单、状态栏、登录流程、
+// PwdVault 主窗口实现。构建侧边栏 + 内容区，处理菜单、状态栏、解锁流程、
 // 视图间联动与 IPC 断连。
 // =============================================================================
 #include "MainWindow.h"
 #include "IpcClient.h"
 #include "views/GeneratorView.h"
 #include "views/InputView.h"
-#include "views/LoginView.h"
+#include "views/UnlockView.h"
 #include "views/PasswordBookView.h"
 #include "views/SettingsView.h"
 
@@ -28,8 +28,6 @@
 #include <QString>
 #include <QVBoxLayout>
 #include <QWidget>
-
-#include <string>
 
 namespace pwdvault::ui {
 
@@ -85,10 +83,14 @@ MainWindow::MainWindow(IpcClient* client, QWidget* parent)
 
     update_connection_status();
 
-    // 启动流程：检测首次使用并显示登录视图
-    // LoginView 作为模态对话框显示在主窗口之上
-    const bool first_time = detect_first_time();
-    show_login(first_time);
+    // 启动流程：查询 vault 状态，若程序密码已启用且已锁定则显示解锁视图
+    if (should_show_unlock()) {
+        show_unlock();
+    } else {
+        // 明文模式或已解锁：直接进入主界面
+        if (book_view_) book_view_->refresh();
+        if (settings_view_) settings_view_->refresh_status();
+    }
 }
 
 MainWindow::~MainWindow() = default;
@@ -125,9 +127,12 @@ void MainWindow::build_sidebar() {
     // GeneratorView: 生成密码 → 传给 InputView（若由 InputView 请求则切回）
     connect(generator_view_, &GeneratorView::password_generated,
             this, &MainWindow::on_password_generated);
-    // SettingsView: 锁定 → 显示登录视图
+    // SettingsView: 锁定 → 显示解锁视图
     connect(settings_view_, &SettingsView::lock_requested,
             this, &MainWindow::on_lock_requested);
+    // SettingsView: 程序密码状态变化 → 通知 MainWindow
+    connect(settings_view_, &SettingsView::password_state_changed,
+            this, &MainWindow::on_password_state_changed);
     // PasswordBookView: 编辑成功 → 通知 MainWindow（当前仅刷新，未来可扩展）
     connect(book_view_, &PasswordBookView::entry_updated,
             this, [this](int64_t) { update_last_op_time(); });
@@ -176,25 +181,15 @@ void MainWindow::attempt_reconnect() {
     if (!client_) return;
     if (client_->connect_to_service()) {
         update_connection_status();
-        // 重连成功后检查 vault 状态：若已锁定则重新显示登录
-        auto result = client_->list_entries();
-        if (!result.ok()) {
-            const auto& err = result.error();
-            if (err.code == core::ErrorCode::Unauthorized) {
-                QMessageBox::information(this, QStringLiteral("重连"),
-                    QStringLiteral("已重新连接到 service，但密码库已锁定，请重新输入主密码。"));
-                show_login(false);
-                return;
-            }
-            if (err.code == core::ErrorCode::NotFound) {
-                QMessageBox::information(this, QStringLiteral("重连"),
-                    QStringLiteral("已重新连接到 service，但密码库未初始化。"));
-                show_login(true);
-                return;
-            }
-        } else {
-            if (book_view_) book_view_->refresh();
+        // 重连成功后检查 vault 状态：若已锁定则显示解锁视图
+        if (should_show_unlock()) {
+            QMessageBox::information(this, QStringLiteral("重连"),
+                QStringLiteral("已重新连接到 service，但密码库已锁定，请输入程序密码解锁。"));
+            show_unlock();
+            return;
         }
+        if (book_view_) book_view_->refresh();
+        if (settings_view_) settings_view_->refresh_status();
         QMessageBox::information(this, QStringLiteral("重连"),
             QStringLiteral("已重新连接到 service。"));
     } else {
@@ -205,52 +200,43 @@ void MainWindow::attempt_reconnect() {
 }
 
 // ---------------------------------------------------------------------------
-// 登录/解锁流程
+// 解锁流程
 // ---------------------------------------------------------------------------
 
-bool MainWindow::detect_first_time() const {
+bool MainWindow::should_show_unlock() const {
     if (!client_ || !client_->is_connected()) return false;
-
-    // 通过 unlock("") 探测 vault 是否已初始化：
-    //   - 未初始化时返回 {NotFound, "vault not initialized"}（不会增加失败计数）
-    //   - 已初始化时返回 UnlockResponse{success=false}（空密码解锁失败）
-    //     或 {IpcError, ...}（连接问题）
-    // 注意：已初始化时会消耗一次失败尝试（共 5 次），可接受。
-    auto result = client_->unlock("");
-    if (!result.ok()) {
-        const auto& err = result.error();
-        if (err.code == core::ErrorCode::NotFound &&
-            err.message.find("not initialized") != std::string::npos) {
-            return true;
-        }
-    }
-    return false;
+    auto result = client_->get_vault_status();
+    if (!result.ok()) return false;
+    // 程序密码已启用且密码库已锁定时才需要显示解锁视图
+    return result.value().password_enabled && result.value().is_locked;
 }
 
-void MainWindow::show_login(bool is_first_time) {
-    // 清理旧的 LoginView
-    if (login_view_) {
-        login_view_->hide();
-        login_view_->deleteLater();
-        login_view_ = nullptr;
+void MainWindow::show_unlock() {
+    // 清理旧的 UnlockView
+    if (unlock_view_) {
+        unlock_view_->hide();
+        unlock_view_->deleteLater();
+        unlock_view_ = nullptr;
     }
 
-    login_view_ = new LoginView(client_, is_first_time, this);
-    connect(login_view_, &LoginView::login_succeeded,
-            this, &MainWindow::on_login_succeeded);
-    connect(login_view_, &LoginView::rejected,
-            this, &MainWindow::on_login_rejected);
-    login_view_->show();
+    unlock_view_ = new UnlockView(client_, this);
+    connect(unlock_view_, &UnlockView::unlock_succeeded,
+            this, &MainWindow::on_unlock_succeeded);
+    connect(unlock_view_, &UnlockView::rejected,
+            this, &MainWindow::on_unlock_rejected);
+    unlock_view_->show();
 }
 
-void MainWindow::on_login_succeeded() {
-    if (login_view_) {
-        login_view_->hide();
-        login_view_->deleteLater();
-        login_view_ = nullptr;
+void MainWindow::on_unlock_succeeded() {
+    if (unlock_view_) {
+        unlock_view_->hide();
+        unlock_view_->deleteLater();
+        unlock_view_ = nullptr;
     }
     // 刷新密码本视图（加载条目列表）
     if (book_view_) book_view_->refresh();
+    // 刷新设置视图的程序密码状态显示
+    if (settings_view_) settings_view_->refresh_status();
     // 确保主窗口可见并处于前台
     show();
     raise();
@@ -258,15 +244,22 @@ void MainWindow::on_login_succeeded() {
     update_connection_status();
 }
 
-void MainWindow::on_login_rejected() {
-    // 用户关闭登录对话框但未登录成功 → 退出应用
+void MainWindow::on_unlock_rejected() {
+    // 用户关闭解锁对话框但未解锁成功 → 退出应用
     QApplication::quit();
 }
 
 void MainWindow::on_lock_requested() {
-    // 隐藏主界面，显示登录视图（解锁模式）
+    // 隐藏主界面，显示解锁视图
     hide();
-    show_login(false);
+    show_unlock();
+}
+
+void MainWindow::on_password_state_changed(bool enabled) {
+    // 程序密码状态变化：刷新设置视图（按钮可见性已由 SettingsView 内部处理）
+    // 此处可用于主窗口层面的状态联动（如菜单项可用性等）
+    (void)enabled;
+    if (settings_view_) settings_view_->refresh_status();
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +303,10 @@ void MainWindow::on_sidebar_item_changed(int row) {
     // 进入密码本视图时自动刷新
     if (row == kSidebarBook && book_view_) {
         book_view_->refresh();
+    }
+    // 进入设置视图时刷新程序密码状态
+    if (row == kSidebarSettings && settings_view_) {
+        settings_view_->refresh_status();
     }
     update_last_op_time();
 }

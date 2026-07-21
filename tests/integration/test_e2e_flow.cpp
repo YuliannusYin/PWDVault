@@ -9,17 +9,29 @@
 //   - 实例化真实的 CryptoEngine / InMemoryStorageEngine / PasswordGenerator
 //   - 使用临时目录下的 vault.meta 文件，避免污染用户数据
 //   - 通过 protocol::serialize / deserialize 在协议层进行序列化往返，
-//     最大化覆盖“UI 序列化 → service 反序列化 → 业务逻辑 → 序列化 → UI 反序列化”
+//     最大化覆盖"UI 序列化 → service 反序列化 → 业务逻辑 → 序列化 → UI 反序列化"
 //     的完整链路（命名管道传输环节除外）。
 //   - 失败响应统一按 ErrorResponse 反序列化，提取 ErrorCode 与 message 进行断言。
 //
+// 状态机说明：
+//   - ServiceCore 启动时自动检测 vault.meta 是否存在：
+//     - 不存在 → 明文模式（password_enabled=false，自动 unlocked=true）
+//     - 存在   → 加密模式（password_enabled=true，unlocked=false，需 Unlock）
+//   - EnableProgramPassword：明文 → 加密，重新加密所有现有条目
+//   - DisableProgramPassword：加密 → 明文，解密所有条目并删除 vault.meta
+//   - ChangeProgramPassword：仅重新包装 encryption_key，条目不变
+//
 // 覆盖流程：
-//   1. 首次启动初始化（unlock 未初始化 vault 应返回 NotFound；首次 login 成功）
-//   2. 锁定后访问被拒（list_entries 返回 Unauthorized）
-//   3. 解锁（正确密码成功；错误密码失败；连续 5 次错误后进入冷却期）
-//   4. CRUD 全流程（add / get / list / search / update / remove）
-//   5. 密码生成器（generate_password / estimate_strength）
-//   6. 心跳 ping（返回合理的 server_timestamp）
+//   1. 明文模式启动（自动解锁，可直接 CRUD）
+//   2. GetVaultStatus 返回正确状态
+//   3. 启用程序密码（含已有条目重新加密）
+//   4. 锁定后访问被拒（list_entries 返回 Unauthorized）
+//   5. 解锁（正确密码成功；错误密码失败；连续 5 次错误后进入冷却期）
+//   6. 禁用程序密码（条目解密回明文）
+//   7. 修改程序密码
+//   8. CRUD 全流程（add / get / list / search / update / remove）
+//   9. 密码生成器（generate_password / estimate_strength）
+//  10. 心跳 ping（返回合理的 server_timestamp）
 // =============================================================================
 #include "ServiceCore.h"
 
@@ -51,8 +63,8 @@
 
 namespace {
 
-/// 生成一个测试用主密码（足够长以满足 Argon2id 推荐输入长度）。
-constexpr const char* kTestMasterPassword = "MasterPass123!";
+/// 测试用程序密码（足够长以满足 Argon2id 推荐输入长度）。
+constexpr const char* kTestProgramPassword = "ProgramPass123!";
 
 /// 生成唯一的临时 meta 文件路径，每个测试用例独立使用，避免相互干扰。
 std::filesystem::path make_unique_meta_path() {
@@ -78,9 +90,10 @@ protected:
     void SetUp() override {
         meta_path_ = make_unique_meta_path();
 
-        // 与 service main.cpp 一致：CryptoEngine 用空 master_key 构造，
-        // 仅用于 derive_key / generate_key_and_iv；entry 加密用的 master_key
-        // 由 ServiceCore 在 login/unlock 后通过 set_master_key 内部构造独立实例。
+        // 与 service main.cpp 一致：CryptoEngine 用空 encryption_key 构造，
+        // 仅用于 derive_key / generate_key_and_iv；entry 加密用的 encryption_key
+        // 由 ServiceCore 在 EnableProgramPassword/Unlock 后通过 set_encryption_key
+        // 内部构造独立实例。
         crypto_ = std::make_unique<crypto::CryptoEngine>(core::ByteSpan{});
         storage_ = std::make_unique<storage::InMemoryStorageEngine>();
         generator_ = std::make_unique<generator::PasswordGenerator>();
@@ -141,7 +154,7 @@ protected:
             core::ErrorCode::IpcError, "反序列化响应失败"));
     }
 
-    /// 针对无请求负载的命令（Ping / Lock / ListEntries）发送空负载。
+    /// 针对无请求负载的命令（Ping / Lock / ListEntries / GetVaultStatus）发送空负载。
     template <typename Resp>
     core::Result<Resp> send_empty(protocol::CommandId cmd) {
         core::ByteVec payload;  // 空 payload
@@ -172,21 +185,21 @@ protected:
             core::ErrorCode::IpcError, "反序列化响应失败"));
     }
 
-    /// 便捷：执行首次 login 设置主密码并进入已解锁状态。
+    /// 便捷：启用程序密码，使 vault 进入加密已解锁状态。
     /// 多个 TEST_F 用例在执行 CRUD / generate 等需已解锁的操作前调用此辅助。
-    void login_first_time(const std::string& password = kTestMasterPassword) {
-        protocol::LoginRequest req;
+    void enable_program_password(const std::string& password = kTestProgramPassword) {
+        protocol::EnableProgramPasswordRequest req;
         req.password = password;
-        req.is_first_time = true;
-        auto r = send<protocol::LoginRequest, protocol::LoginResponse>(
-            protocol::CommandId::Login, req);
-        ASSERT_TRUE(r.ok()) << "login first_time 失败: " << r.error().what();
+        auto r = send<protocol::EnableProgramPasswordRequest,
+                      protocol::EnableProgramPasswordResponse>(
+            protocol::CommandId::EnableProgramPassword, req);
+        ASSERT_TRUE(r.ok()) << "enable_program_password 失败: " << r.error().what();
         ASSERT_TRUE(r.value().success)
-            << "login first_time 返回 success=false: "
+            << "enable_program_password 返回 success=false: "
             << r.value().error_message;
     }
 
-    /// 便捷：执行 lock 命令。
+    /// 便捷：执行 lock 命令（仅在加密模式下有效）。
     void lock() {
         auto r = send_empty<protocol::LockResponse>(protocol::CommandId::Lock);
         ASSERT_TRUE(r.ok()) << "lock 失败: " << r.error().what();
@@ -200,6 +213,12 @@ protected:
             protocol::CommandId::Unlock, req);
     }
 
+    /// 便捷：查询 vault 状态。
+    core::Result<protocol::GetVaultStatusResponse> get_vault_status() {
+        return send_empty<protocol::GetVaultStatusResponse>(
+            protocol::CommandId::GetVaultStatus);
+    }
+
     std::unique_ptr<service::ServiceCore> core_;
     std::filesystem::path meta_path_;
 
@@ -211,60 +230,134 @@ private:
 };
 
 // =============================================================================
-// 1. 首次启动初始化
+// 1. 明文模式启动（无 vault.meta 时自动进入明文模式）
 // =============================================================================
 
-/// 未初始化 vault 时调用 unlock（即用空密码 / 任意密码尝试解锁）应返回 NotFound。
-TEST_F(E2EFlowTest, UnlockUninitializedVaultReturnsNotFound) {
-    auto r = unlock("any-password-here");
-    ASSERT_FALSE(r.ok());
-    EXPECT_EQ(r.error().code, core::ErrorCode::NotFound)
-        << "实际错误: " << r.error().what();
+/// 启动时无 vault.meta，应自动进入明文模式（password_enabled=false, is_locked=false）。
+TEST_F(E2EFlowTest, StartupWithoutMetaEntersPlaintextMode) {
+    auto r = get_vault_status();
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_FALSE(r.value().password_enabled);
+    EXPECT_FALSE(r.value().is_locked);
 }
 
-/// 非首次 login 时未初始化也应返回 NotFound。
-TEST_F(E2EFlowTest, LoginNotFirstTimeOnUninitializedVaultReturnsNotFound) {
-    protocol::LoginRequest req;
-    req.password = kTestMasterPassword;
-    req.is_first_time = false;
-    auto r = send<protocol::LoginRequest, protocol::LoginResponse>(
-        protocol::CommandId::Login, req);
-    ASSERT_FALSE(r.ok());
-    EXPECT_EQ(r.error().code, core::ErrorCode::NotFound);
+/// 明文模式下可直接调用 list_entries（无需解锁），返回空列表。
+TEST_F(E2EFlowTest, PlaintextModeAllowsCrudWithoutUnlock) {
+    auto r = send_empty<protocol::ListEntriesResponse>(
+        protocol::CommandId::ListEntries);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_TRUE(r.value().entries.empty());
 }
 
-/// 首次 login 应成功并返回 success=true，使 vault 进入已解锁状态。
-TEST_F(E2EFlowTest, FirstTimeLoginSucceeds) {
-    protocol::LoginRequest req;
-    req.password = kTestMasterPassword;
-    req.is_first_time = true;
-    auto r = send<protocol::LoginRequest, protocol::LoginResponse>(
-        protocol::CommandId::Login, req);
+/// 明文模式下调用 lock 应返回错误（不支持锁定）。
+TEST_F(E2EFlowTest, LockInPlaintextModeReturnsError) {
+    auto r = send_empty<protocol::LockResponse>(protocol::CommandId::Lock);
+    ASSERT_FALSE(r.ok());
+    EXPECT_EQ(r.error().code, core::ErrorCode::InvalidArgument);
+}
+
+/// 明文模式下调用 unlock 应直接返回 success=true（无需密码）。
+TEST_F(E2EFlowTest, UnlockInPlaintextModeSucceedsWithoutPassword) {
+    auto r = unlock("");
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_TRUE(r.value().success);
+}
+
+// =============================================================================
+// 2. GetVaultStatus 状态查询
+// =============================================================================
+
+/// 启用程序密码后，GetVaultStatus 应返回 password_enabled=true, is_locked=false。
+TEST_F(E2EFlowTest, GetVaultStatusAfterEnable) {
+    enable_program_password();
+
+    auto r = get_vault_status();
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_TRUE(r.value().password_enabled);
+    EXPECT_FALSE(r.value().is_locked);
+}
+
+/// 启用程序密码并锁定后，GetVaultStatus 应返回 password_enabled=true, is_locked=true。
+TEST_F(E2EFlowTest, GetVaultStatusAfterLock) {
+    enable_program_password();
+    lock();
+
+    auto r = get_vault_status();
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_TRUE(r.value().password_enabled);
+    EXPECT_TRUE(r.value().is_locked);
+}
+
+// =============================================================================
+// 3. 启用程序密码
+// =============================================================================
+
+/// 首次启用程序密码应成功。
+TEST_F(E2EFlowTest, EnableProgramPasswordSucceeds) {
+    protocol::EnableProgramPasswordRequest req;
+    req.password = kTestProgramPassword;
+    auto r = send<protocol::EnableProgramPasswordRequest,
+                  protocol::EnableProgramPasswordResponse>(
+        protocol::CommandId::EnableProgramPassword, req);
     ASSERT_TRUE(r.ok()) << r.error().what();
     EXPECT_TRUE(r.value().success);
     EXPECT_TRUE(r.value().error_message.empty());
 }
 
-/// 已初始化后再次以 first_time=true 调 login 应返回 AlreadyExists。
-TEST_F(E2EFlowTest, FirstTimeLoginTwiceReturnsAlreadyExists) {
-    login_first_time();
+/// 已启用后再次启用应返回 success=false。
+TEST_F(E2EFlowTest, EnableTwiceReturnsFailure) {
+    enable_program_password();
 
-    protocol::LoginRequest req;
-    req.password = kTestMasterPassword;
-    req.is_first_time = true;
-    auto r = send<protocol::LoginRequest, protocol::LoginResponse>(
-        protocol::CommandId::Login, req);
-    ASSERT_FALSE(r.ok());
-    EXPECT_EQ(r.error().code, core::ErrorCode::AlreadyExists);
+    protocol::EnableProgramPasswordRequest req;
+    req.password = kTestProgramPassword;
+    auto r = send<protocol::EnableProgramPasswordRequest,
+                  protocol::EnableProgramPasswordResponse>(
+        protocol::CommandId::EnableProgramPassword, req);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_FALSE(r.value().success);
+}
+
+/// 启用程序密码后，已有明文条目应被重新加密。
+/// 验证：启用前添加明文条目 → 启用 → 锁定 → 解锁 → 读取条目，password 应恢复原文。
+TEST_F(E2EFlowTest, EnableReencryptsExistingEntries) {
+    // 1. 明文模式下添加条目
+    protocol::AddEntryRequest add_req;
+    add_req.entry.website = "github.com";
+    add_req.entry.username = "user1";
+    add_req.entry.password = "p@ssw0rd";
+    add_req.entry.note = "明文模式添加";
+    auto add_resp = send<protocol::AddEntryRequest, protocol::AddEntryResponse>(
+        protocol::CommandId::AddEntry, add_req);
+    ASSERT_TRUE(add_resp.ok()) << add_resp.error().what();
+    const int64_t id = add_resp.value().entry.id;
+    ASSERT_GT(id, 0);
+
+    // 2. 启用程序密码（应触发重新加密）
+    enable_program_password();
+
+    // 3. 锁定后解锁
+    lock();
+    auto unlock_r = unlock(kTestProgramPassword);
+    ASSERT_TRUE(unlock_r.ok() && unlock_r.value().success)
+        << unlock_r.error().what();
+
+    // 4. 读取条目，password 应恢复原文
+    protocol::GetEntryRequest get_req;
+    get_req.id = id;
+    auto get_resp = send<protocol::GetEntryRequest, protocol::GetEntryResponse>(
+        protocol::CommandId::GetEntry, get_req);
+    ASSERT_TRUE(get_resp.ok()) << get_resp.error().what();
+    EXPECT_EQ(get_resp.value().entry.password, "p@ssw0rd");
+    EXPECT_EQ(get_resp.value().entry.website, "github.com");
 }
 
 // =============================================================================
-// 2. 未解锁访问被拒
+// 4. 未解锁访问被拒（加密模式）
 // =============================================================================
 
-/// 登录后默认是已解锁状态。lock() 后再访问 list_entries 应返回 Unauthorized。
+/// 加密模式下 lock() 后再访问 list_entries 应返回 Unauthorized。
 TEST_F(E2EFlowTest, ListEntriesAfterLockReturnsUnauthorized) {
-    login_first_time();
+    enable_program_password();
     lock();
 
     auto r = send_empty<protocol::ListEntriesResponse>(
@@ -273,9 +366,9 @@ TEST_F(E2EFlowTest, ListEntriesAfterLockReturnsUnauthorized) {
     EXPECT_EQ(r.error().code, core::ErrorCode::Unauthorized);
 }
 
-/// lock 后 add_entry 也应返回 Unauthorized。
+/// 加密模式下 lock 后 add_entry 也应返回 Unauthorized。
 TEST_F(E2EFlowTest, AddEntryAfterLockReturnsUnauthorized) {
-    login_first_time();
+    enable_program_password();
     lock();
 
     protocol::AddEntryRequest req;
@@ -291,23 +384,23 @@ TEST_F(E2EFlowTest, AddEntryAfterLockReturnsUnauthorized) {
 }
 
 // =============================================================================
-// 3. 解锁流程
+// 5. 解锁流程（加密模式）
 // =============================================================================
 
-/// lock 后用正确密码 unlock 应成功。
+/// 加密模式下 lock 后用正确密码 unlock 应成功。
 TEST_F(E2EFlowTest, UnlockWithCorrectPasswordSucceeds) {
-    login_first_time();
+    enable_program_password();
     lock();
 
-    auto r = unlock(kTestMasterPassword);
+    auto r = unlock(kTestProgramPassword);
     ASSERT_TRUE(r.ok()) << r.error().what();
     EXPECT_TRUE(r.value().success);
     EXPECT_TRUE(r.value().error_message.empty());
 }
 
-/// lock 后用错误密码 unlock 应失败（success=false），不返回 ErrorCode。
+/// 加密模式下 lock 后用错误密码 unlock 应失败（success=false）。
 TEST_F(E2EFlowTest, UnlockWithWrongPasswordFails) {
-    login_first_time();
+    enable_program_password();
     lock();
 
     auto r = unlock("WrongPassword");
@@ -319,10 +412,10 @@ TEST_F(E2EFlowTest, UnlockWithWrongPasswordFails) {
 /// 连续 5 次错误密码后，第 6 次（即使使用正确密码）应进入冷却期并返回
 /// success=false 与 "too many failed attempts" 提示。
 TEST_F(E2EFlowTest, FiveFailedUnlocksTriggerCooldown) {
-    login_first_time();
+    enable_program_password();
     lock();
 
-    // 前 5 次错误密码：均返回 success=false，但 error_message 为 "master password incorrect"
+    // 前 5 次错误密码：均返回 success=false
     for (int i = 0; i < 5; ++i) {
         auto r = unlock("WrongPassword");
         ASSERT_TRUE(r.ok()) << "第 " << (i + 1) << " 次 unlock 调用应返回响应";
@@ -331,7 +424,7 @@ TEST_F(E2EFlowTest, FiveFailedUnlocksTriggerCooldown) {
     }
 
     // 第 6 次：即使使用正确密码，也应被冷却拦截
-    auto r = unlock(kTestMasterPassword);
+    auto r = unlock(kTestProgramPassword);
     ASSERT_TRUE(r.ok()) << r.error().what();
     EXPECT_FALSE(r.value().success);
     EXPECT_NE(r.value().error_message.find("too many failed attempts"),
@@ -340,13 +433,177 @@ TEST_F(E2EFlowTest, FiveFailedUnlocksTriggerCooldown) {
 }
 
 // =============================================================================
-// 4. CRUD 全流程
+// 6. 禁用程序密码
+// =============================================================================
+
+/// 加密模式下禁用程序密码应成功，并切换回明文模式。
+TEST_F(E2EFlowTest, DisableProgramPasswordSucceeds) {
+    enable_program_password();
+
+    protocol::DisableProgramPasswordRequest req;
+    req.password = kTestProgramPassword;
+    auto r = send<protocol::DisableProgramPasswordRequest,
+                  protocol::DisableProgramPasswordResponse>(
+        protocol::CommandId::DisableProgramPassword, req);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_TRUE(r.value().success);
+
+    // 验证已切换回明文模式
+    auto status = get_vault_status();
+    ASSERT_TRUE(status.ok());
+    EXPECT_FALSE(status.value().password_enabled);
+    EXPECT_FALSE(status.value().is_locked);
+}
+
+/// 禁用程序密码时密码错误应失败。
+TEST_F(E2EFlowTest, DisableWithWrongPasswordFails) {
+    enable_program_password();
+    lock();  // 锁定后需要验证密码
+
+    protocol::DisableProgramPasswordRequest req;
+    req.password = "WrongPassword";
+    auto r = send<protocol::DisableProgramPasswordRequest,
+                  protocol::DisableProgramPasswordResponse>(
+        protocol::CommandId::DisableProgramPassword, req);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_FALSE(r.value().success);
+}
+
+/// 明文模式下调用禁用应返回 success=false。
+TEST_F(E2EFlowTest, DisableInPlaintextModeFails) {
+    protocol::DisableProgramPasswordRequest req;
+    req.password = "any-password";
+    auto r = send<protocol::DisableProgramPasswordRequest,
+                  protocol::DisableProgramPasswordResponse>(
+        protocol::CommandId::DisableProgramPassword, req);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_FALSE(r.value().success);
+}
+
+/// 禁用程序密码后，已加密条目应被解密回明文。
+TEST_F(E2EFlowTest, DisableDecryptsEntriesBackToPlaintext) {
+    // 1. 启用程序密码并添加条目
+    enable_program_password();
+    protocol::AddEntryRequest add_req;
+    add_req.entry.website = "github.com";
+    add_req.entry.username = "user1";
+    add_req.entry.password = "p@ssw0rd";
+    auto add_resp = send<protocol::AddEntryRequest, protocol::AddEntryResponse>(
+        protocol::CommandId::AddEntry, add_req);
+    ASSERT_TRUE(add_resp.ok());
+    const int64_t id = add_resp.value().entry.id;
+
+    // 2. 禁用程序密码
+    protocol::DisableProgramPasswordRequest dis_req;
+    dis_req.password = kTestProgramPassword;
+    auto dis_r = send<protocol::DisableProgramPasswordRequest,
+                      protocol::DisableProgramPasswordResponse>(
+        protocol::CommandId::DisableProgramPassword, dis_req);
+    ASSERT_TRUE(dis_r.ok() && dis_r.value().success);
+
+    // 3. 读取条目，password 应仍为原文（明文模式）
+    protocol::GetEntryRequest get_req;
+    get_req.id = id;
+    auto get_resp = send<protocol::GetEntryRequest, protocol::GetEntryResponse>(
+        protocol::CommandId::GetEntry, get_req);
+    ASSERT_TRUE(get_resp.ok()) << get_resp.error().what();
+    EXPECT_EQ(get_resp.value().entry.password, "p@ssw0rd");
+}
+
+// =============================================================================
+// 7. 修改程序密码
+// =============================================================================
+
+/// 修改程序密码应成功，且不影响条目解密。
+TEST_F(E2EFlowTest, ChangeProgramPasswordSucceeds) {
+    enable_program_password();
+
+    // 修改密码
+    protocol::ChangeProgramPasswordRequest req;
+    req.old_password = kTestProgramPassword;
+    req.new_password = "NewProgramPass456!";
+    auto r = send<protocol::ChangeProgramPasswordRequest,
+                  protocol::ChangeProgramPasswordResponse>(
+        protocol::CommandId::ChangeProgramPassword, req);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_TRUE(r.value().success);
+
+    // 锁定后用新密码解锁应成功
+    lock();
+    auto unlock_r = unlock("NewProgramPass456!");
+    ASSERT_TRUE(unlock_r.ok() && unlock_r.value().success);
+}
+
+/// 修改程序密码时旧密码错误应失败。
+TEST_F(E2EFlowTest, ChangeWithWrongOldPasswordFails) {
+    enable_program_password();
+
+    protocol::ChangeProgramPasswordRequest req;
+    req.old_password = "WrongOldPassword";
+    req.new_password = "NewProgramPass456!";
+    auto r = send<protocol::ChangeProgramPasswordRequest,
+                  protocol::ChangeProgramPasswordResponse>(
+        protocol::CommandId::ChangeProgramPassword, req);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_FALSE(r.value().success);
+}
+
+/// 明文模式下调用修改密码应失败。
+TEST_F(E2EFlowTest, ChangeInPlaintextModeFails) {
+    protocol::ChangeProgramPasswordRequest req;
+    req.old_password = "any";
+    req.new_password = "new";
+    auto r = send<protocol::ChangeProgramPasswordRequest,
+                  protocol::ChangeProgramPasswordResponse>(
+        protocol::CommandId::ChangeProgramPassword, req);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_FALSE(r.value().success);
+}
+
+/// 修改程序密码后，已有条目应仍可正常解密。
+TEST_F(E2EFlowTest, ChangePasswordPreservesEntries) {
+    enable_program_password();
+
+    // 添加条目
+    protocol::AddEntryRequest add_req;
+    add_req.entry.website = "github.com";
+    add_req.entry.username = "user1";
+    add_req.entry.password = "p@ssw0rd";
+    auto add_resp = send<protocol::AddEntryRequest, protocol::AddEntryResponse>(
+        protocol::CommandId::AddEntry, add_req);
+    ASSERT_TRUE(add_resp.ok());
+    const int64_t id = add_resp.value().entry.id;
+
+    // 修改密码
+    protocol::ChangeProgramPasswordRequest chg_req;
+    chg_req.old_password = kTestProgramPassword;
+    chg_req.new_password = "NewProgramPass456!";
+    auto chg_r = send<protocol::ChangeProgramPasswordRequest,
+                      protocol::ChangeProgramPasswordResponse>(
+        protocol::CommandId::ChangeProgramPassword, chg_req);
+    ASSERT_TRUE(chg_r.ok() && chg_r.value().success);
+
+    // 锁定 → 用新密码解锁 → 读取条目，password 应恢复原文
+    lock();
+    auto unlock_r = unlock("NewProgramPass456!");
+    ASSERT_TRUE(unlock_r.ok() && unlock_r.value().success);
+
+    protocol::GetEntryRequest get_req;
+    get_req.id = id;
+    auto get_resp = send<protocol::GetEntryRequest, protocol::GetEntryResponse>(
+        protocol::CommandId::GetEntry, get_req);
+    ASSERT_TRUE(get_resp.ok()) << get_resp.error().what();
+    EXPECT_EQ(get_resp.value().entry.password, "p@ssw0rd");
+}
+
+// =============================================================================
+// 8. CRUD 全流程（加密模式）
 // =============================================================================
 
 /// add_entry 应返回带 id 的 entry，id > 0；get_entry 应返回字段一致的原条目。
 /// 验证 password 字段经加解密往返后恢复原文。
 TEST_F(E2EFlowTest, AddAndGetEntryRoundtrip) {
-    login_first_time();
+    enable_program_password();
 
     protocol::AddEntryRequest add_req;
     add_req.entry.website = "github.com";
@@ -387,7 +644,7 @@ TEST_F(E2EFlowTest, AddAndGetEntryRoundtrip) {
 
 /// 添加多条不同网站的条目，list_entries 应返回全部。
 TEST_F(E2EFlowTest, ListEntriesReturnsAllAdded) {
-    login_first_time();
+    enable_program_password();
 
     auto add_one = [this](const std::string& website,
                          const std::string& username) -> int64_t {
@@ -431,7 +688,7 @@ TEST_F(E2EFlowTest, ListEntriesReturnsAllAdded) {
 
 /// search_entries 限定字段时应只返回匹配的条目。
 TEST_F(E2EFlowTest, SearchEntriesByWebsiteReturnsMatchOnly) {
-    login_first_time();
+    enable_program_password();
 
     // 添加 3 条不同网站条目
     auto add_one = [this](const std::string& website,
@@ -467,7 +724,7 @@ TEST_F(E2EFlowTest, SearchEntriesByWebsiteReturnsMatchOnly) {
 
 /// update_entry 应更新字段并返回最新值；get_entry 应反映更新。
 TEST_F(E2EFlowTest, UpdateEntryModifiesFields) {
-    login_first_time();
+    enable_program_password();
 
     protocol::AddEntryRequest add_req;
     add_req.entry.website = "github.com";
@@ -515,7 +772,7 @@ TEST_F(E2EFlowTest, UpdateEntryModifiesFields) {
 
 /// remove_entry 应成功；之后 get_entry 应返回 NotFound。
 TEST_F(E2EFlowTest, RemoveEntryThenGetReturnsNotFound) {
-    login_first_time();
+    enable_program_password();
 
     protocol::AddEntryRequest add_req;
     add_req.entry.website = "github.com";
@@ -548,7 +805,7 @@ TEST_F(E2EFlowTest, RemoveEntryThenGetReturnsNotFound) {
 
 /// remove 不存在的条目应返回 NotFound。
 TEST_F(E2EFlowTest, RemoveNonexistentReturnsNotFound) {
-    login_first_time();
+    enable_program_password();
 
     protocol::RemoveEntryRequest rm_req;
     rm_req.id = 99999;
@@ -561,7 +818,7 @@ TEST_F(E2EFlowTest, RemoveNonexistentReturnsNotFound) {
 
 /// get 不存在的条目应返回 NotFound。
 TEST_F(E2EFlowTest, GetNonexistentReturnsNotFound) {
-    login_first_time();
+    enable_program_password();
 
     protocol::GetEntryRequest get_req;
     get_req.id = 88888;
@@ -572,12 +829,12 @@ TEST_F(E2EFlowTest, GetNonexistentReturnsNotFound) {
 }
 
 // =============================================================================
-// 5. 密码生成器
+// 9. 密码生成器
 // =============================================================================
 
 /// generate_password 应返回指定长度的密码。
 TEST_F(E2EFlowTest, GeneratePasswordReturnsExpectedLength) {
-    login_first_time();
+    enable_program_password();
 
     protocol::GeneratePasswordRequest req;
     req.options.length = 20;
@@ -596,7 +853,7 @@ TEST_F(E2EFlowTest, GeneratePasswordReturnsExpectedLength) {
 
 /// generate_password 在已锁定时应返回 Unauthorized。
 TEST_F(E2EFlowTest, GeneratePasswordAfterLockReturnsUnauthorized) {
-    login_first_time();
+    enable_program_password();
     lock();
 
     protocol::GeneratePasswordRequest req;
@@ -610,7 +867,7 @@ TEST_F(E2EFlowTest, GeneratePasswordAfterLockReturnsUnauthorized) {
 
 /// estimate_strength 对弱密码返回较低值，对强密码返回较高值。
 TEST_F(E2EFlowTest, EstimateStrengthOrdersWeakAndStrong) {
-    login_first_time();
+    enable_program_password();
 
     protocol::EstimateStrengthRequest weak_req;
     weak_req.password = "short";
@@ -635,7 +892,7 @@ TEST_F(E2EFlowTest, EstimateStrengthOrdersWeakAndStrong) {
 }
 
 // =============================================================================
-// 6. Ping
+// 10. Ping
 // =============================================================================
 
 /// ping 应返回合理的 server_timestamp（接近当前 Unix 时间戳）。
@@ -658,7 +915,7 @@ TEST_F(E2EFlowTest, PingReturnsRecentTimestamp) {
 
 /// ping 在未解锁状态下也应可调用（不属于敏感操作）。
 TEST_F(E2EFlowTest, PingWorksEvenWhenLocked) {
-    login_first_time();
+    enable_program_password();
     lock();
 
     auto resp = send_empty<protocol::PingResponse>(protocol::CommandId::Ping);
@@ -667,26 +924,14 @@ TEST_F(E2EFlowTest, PingWorksEvenWhenLocked) {
 }
 
 // =============================================================================
-// 7. 完整用户旅程：初始化 → 解锁 → CRUD → 锁定
+// 11. 完整用户旅程：明文 CRUD → 启用密码 → 锁定/解锁 → 修改密码 → 禁用
 // =============================================================================
 
-/// 端到端完整旅程：覆盖初始化、CRUD、锁定/解锁、删除等核心步骤的串联执行。
-/// 此用例验证多个操作按真实用户使用顺序串联时不会出现状态泄漏或互相干扰。
-TEST_F(E2EFlowTest, FullUserJourneyFromInitToLock) {
-    // 1. 首次 login 设置主密码
-    {
-        protocol::LoginRequest req;
-        req.password = kTestMasterPassword;
-        req.is_first_time = true;
-        auto r = send<protocol::LoginRequest, protocol::LoginResponse>(
-            protocol::CommandId::Login, req);
-        ASSERT_TRUE(r.ok()) << r.error().what();
-        ASSERT_TRUE(r.value().success);
-    }
-
-    // 2. 添加 3 条不同网站的条目
+/// 端到端完整旅程：覆盖明文 CRUD、启用程序密码、锁定/解锁、修改密码、禁用等核心步骤。
+TEST_F(E2EFlowTest, FullUserJourneyPlaintextToEncryptedAndBack) {
+    // 1. 明文模式下添加 2 条条目
     std::vector<int64_t> ids;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 2; ++i) {
         protocol::AddEntryRequest req;
         req.entry.website = "site" + std::to_string(i) + ".com";
         req.entry.username = "user" + std::to_string(i);
@@ -699,57 +944,104 @@ TEST_F(E2EFlowTest, FullUserJourneyFromInitToLock) {
         ids.push_back(r.value().entry.id);
     }
 
-    // 3. list 应返回至少 3 条
+    // 2. 启用程序密码（应重新加密已有条目）
     {
-        auto r = send_empty<protocol::ListEntriesResponse>(
-            protocol::CommandId::ListEntries);
-        ASSERT_TRUE(r.ok()) << r.error().what();
-        EXPECT_GE(r.value().entries.size(), 3u);
+        protocol::EnableProgramPasswordRequest req;
+        req.password = kTestProgramPassword;
+        auto r = send<protocol::EnableProgramPasswordRequest,
+                      protocol::EnableProgramPasswordResponse>(
+            protocol::CommandId::EnableProgramPassword, req);
+        ASSERT_TRUE(r.ok() && r.value().success);
     }
 
-    // 4. 更新第 1 条
+    // 3. 验证条目仍可正常读取（password 恢复原文）
     {
-        protocol::UpdateEntryRequest req;
-        req.entry.id = ids[0];
-        req.entry.website = "site0-updated.com";
-        req.entry.username = "user0_updated";
-        req.entry.password = "new-pwd-0";
-        req.entry.note = "updated note";
-        auto r = send<protocol::UpdateEntryRequest, protocol::UpdateEntryResponse>(
-            protocol::CommandId::UpdateEntry, req);
-        ASSERT_TRUE(r.ok()) << r.error().what();
-        EXPECT_EQ(r.value().entry.username, "user0_updated");
+        protocol::GetEntryRequest get_req;
+        get_req.id = ids[0];
+        auto r = send<protocol::GetEntryRequest, protocol::GetEntryResponse>(
+            protocol::CommandId::GetEntry, get_req);
+        ASSERT_TRUE(r.ok());
+        EXPECT_EQ(r.value().entry.password, "pwd-0");
     }
 
-    // 5. 删除第 2 条
-    {
-        protocol::RemoveEntryRequest req;
-        req.id = ids[1];
-        auto r = send<protocol::RemoveEntryRequest, protocol::RemoveEntryResponse>(
-            protocol::CommandId::RemoveEntry, req);
-        ASSERT_TRUE(r.ok()) << r.error().what();
-    }
-
-    // 6. lock 后再 unlock
+    // 4. 锁定 → 解锁（用原密码）
     lock();
     {
-        auto r = unlock(kTestMasterPassword);
-        ASSERT_TRUE(r.ok()) << r.error().what();
-        ASSERT_TRUE(r.value().success);
+        auto r = unlock(kTestProgramPassword);
+        ASSERT_TRUE(r.ok() && r.value().success);
     }
 
-    // 7. unlock 后 list 应反映更新与删除（剩余 2 条）
+    // 5. 修改程序密码
+    {
+        protocol::ChangeProgramPasswordRequest req;
+        req.old_password = kTestProgramPassword;
+        req.new_password = "NewJourneyPwd789!";
+        auto r = send<protocol::ChangeProgramPasswordRequest,
+                      protocol::ChangeProgramPasswordResponse>(
+            protocol::CommandId::ChangeProgramPassword, req);
+        ASSERT_TRUE(r.ok() && r.value().success);
+    }
+
+    // 6. 锁定 → 用新密码解锁
+    lock();
+    {
+        auto r = unlock("NewJourneyPwd789!");
+        ASSERT_TRUE(r.ok() && r.value().success);
+    }
+
+    // 7. 添加第 3 条条目
+    {
+        protocol::AddEntryRequest req;
+        req.entry.website = "site2.com";
+        req.entry.username = "user2";
+        req.entry.password = "pwd-2";
+        auto r = send<protocol::AddEntryRequest, protocol::AddEntryResponse>(
+            protocol::CommandId::AddEntry, req);
+        ASSERT_TRUE(r.ok());
+        ids.push_back(r.value().entry.id);
+    }
+
+    // 8. 禁用程序密码（用新密码验证）
+    {
+        protocol::DisableProgramPasswordRequest req;
+        req.password = "NewJourneyPwd789!";
+        auto r = send<protocol::DisableProgramPasswordRequest,
+                      protocol::DisableProgramPasswordResponse>(
+            protocol::CommandId::DisableProgramPassword, req);
+        ASSERT_TRUE(r.ok() && r.value().success);
+    }
+
+    // 9. 验证已回到明文模式，所有条目可正常读取
+    {
+        auto status = get_vault_status();
+        ASSERT_TRUE(status.ok());
+        EXPECT_FALSE(status.value().password_enabled);
+    }
     {
         auto r = send_empty<protocol::ListEntriesResponse>(
             protocol::CommandId::ListEntries);
-        ASSERT_TRUE(r.ok()) << r.error().what();
-        EXPECT_EQ(r.value().entries.size(), 2u);
+        ASSERT_TRUE(r.ok());
+        EXPECT_EQ(r.value().entries.size(), 3u);
+        // 验证 password 字段恢复原文
+        bool found0 = false, found2 = false;
+        for (const auto& e : r.value().entries) {
+            if (e.id == ids[0]) {
+                EXPECT_EQ(e.password, "pwd-0");
+                found0 = true;
+            }
+            if (e.id == ids[2]) {
+                EXPECT_EQ(e.password, "pwd-2");
+                found2 = true;
+            }
+        }
+        EXPECT_TRUE(found0);
+        EXPECT_TRUE(found2);
     }
 
-    // 8. ping 始终可用
+    // 10. ping 始终可用
     {
         auto r = send_empty<protocol::PingResponse>(protocol::CommandId::Ping);
-        ASSERT_TRUE(r.ok()) << r.error().what();
+        ASSERT_TRUE(r.ok());
         EXPECT_GT(r.value().server_timestamp, 0u);
     }
 }

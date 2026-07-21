@@ -72,9 +72,12 @@ public:
     // -----------------------------------------------------------------------
 
     core::Result<protocol::PingResponse> ping();
-    core::Result<protocol::LoginResponse> login(const std::string& password, bool is_first_time);
     core::Result<protocol::UnlockResponse> unlock(const std::string& password);
     core::Result<protocol::LockResponse> lock();
+    core::Result<protocol::EnableProgramPasswordResponse> enable_program_password(const std::string& password);
+    core::Result<protocol::DisableProgramPasswordResponse> disable_program_password(const std::string& password);
+    core::Result<protocol::ChangeProgramPasswordResponse> change_program_password(const std::string& old_password, const std::string& new_password);
+    core::Result<protocol::GetVaultStatusResponse> get_vault_status();
     core::Result<protocol::AddEntryResponse> add_entry(const core::PasswordEntry& entry);
     core::Result<protocol::UpdateEntryResponse> update_entry(const core::PasswordEntry& entry);
     core::Result<protocol::RemoveEntryResponse> remove_entry(int64_t id);

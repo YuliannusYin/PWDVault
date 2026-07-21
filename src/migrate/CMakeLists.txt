@@ -13,10 +13,10 @@
 #   - SQLite::SQLite3        （直接读取旧库；新库通过 StorageEngine 间接使用）
 #   - unofficial-sodium::sodium  （sodium_memzero / sodium_init）
 #
-# 方案 A：MasterKeyStore.cpp 位于 src/service/，而 service 是 exe target 不可直接
-# 链接。这里通过 target_sources 直接将该源文件加入迁移工具（参考
-# tests/integration/CMakeLists.txt 的做法）。MasterKeyStore.cpp 仅依赖 SDK 头文件
-# 与 libsodium，不依赖 main.cpp / IpcServer.cpp / ServiceCore.cpp，可安全独立编译。
+# 方案 A：ProgramPasswordStore.cpp 位于 src/service/，而 service 是 exe target 不可
+# 直接链接。这里通过 target_sources 直接将该源文件加入迁移工具（参考
+# tests/integration/CMakeLists.txt 的做法）。ProgramPasswordStore.cpp 仅依赖 SDK 头
+# 文件与 libsodium，不依赖 main.cpp / IpcServer.cpp / ServiceCore.cpp，可安全独立编译。
 # =============================================================================
 
 add_executable(pwdvault-migrate
@@ -25,13 +25,13 @@ add_executable(pwdvault-migrate
     Base64.cpp
 )
 
-# 直接编译 service 模块的 MasterKeyStore.cpp（不修改 src/service/CMakeLists.txt）
+# 直接编译 service 模块的 ProgramPasswordStore.cpp（不修改 src/service/CMakeLists.txt）
 target_sources(pwdvault-migrate PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/service/MasterKeyStore.cpp
+    ${CMAKE_SOURCE_DIR}/src/service/ProgramPasswordStore.cpp
 )
 
-# service 头文件（MasterKeyStore.h）所在目录
-# 同时显式将 src/sdk/ 加入 include path：MasterKeyStore.h 中使用
+# service 头文件（ProgramPasswordStore.h）所在目录
+# 同时显式将 src/sdk/ 加入 include path：ProgramPasswordStore.h 中使用
 # `#include "core/Error.h"` 形式，需要 src/sdk/ 在搜索路径中才能解析到
 # src/sdk/core/Error.h（pwdvault-sdk-core 仅暴露 src/sdk/core/，无法满足该形式）。
 target_include_directories(pwdvault-migrate PRIVATE

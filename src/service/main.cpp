@@ -159,9 +159,9 @@ int main(int argc, char* argv[]) {
     log_line("INFO", std::string("Pipe name: ") + args.pipe_name);
 
     // 2. 初始化引擎
-    //    CryptoEngine 构造时 master_key 可为空（ByteSpan{}），仅用于 derive_key
-    //    与 generate_key_and_iv；entry 加密用的 master_key 由 ServiceCore 在
-    //    login/unlock 后通过 set_master_key 构造独立的 CryptoEngine 实例。
+    //    CryptoEngine 构造时 encryption_key 可为空（ByteSpan{}），仅用于 derive_key
+    //    与 generate_key_and_iv；entry 加密用的 encryption_key 由 ServiceCore 在
+    //    EnableProgramPassword/Unlock 后通过 set_encryption_key 构造独立的 CryptoEngine 实例。
     auto crypto = std::make_unique<pwdvault::crypto::CryptoEngine>(pwdvault::core::ByteSpan{});
     auto storage = std::make_unique<pwdvault::storage::StorageEngine>(db_path);
     auto generator = std::make_unique<pwdvault::generator::PasswordGenerator>();

@@ -64,21 +64,33 @@ struct PingRequest {};
 /// 关闭请求（无负载）。service 收到后执行优雅退出。
 struct ShutdownRequest {};
 
-/// 登录请求。
-/// \param password 主密码（首次设置时为待设置值，否则为待验证值）
-/// \param is_first_time true 表示首次设置主密码，false 表示验证已有主密码
-struct LoginRequest {
-    std::string password;
-    bool is_first_time = false;
-};
-
-/// 解锁请求。语义类似 LoginRequest，但用于已锁定状态恢复会话。
+/// 解锁请求。验证程序密码以恢复会话（仅在程序密码已启用且 vault 处于锁定状态时使用）。
 struct UnlockRequest {
     std::string password;
 };
 
-/// 锁定请求（无负载）。清除 service 内存中的 KEK。
+/// 锁定请求（无负载）。清除 service 内存中的加密密钥。
 struct LockRequest {};
+
+/// 启用程序密码请求。将明文库转为加密库：生成加密密钥并用程序密码包装后写入 vault.meta，
+/// 同时重新加密所有现有条目。
+struct EnableProgramPasswordRequest {
+    std::string password;
+};
+
+/// 禁用程序密码请求。验证当前程序密码后，解密所有条目转回明文存储，并删除 vault.meta。
+struct DisableProgramPasswordRequest {
+    std::string password;
+};
+
+/// 修改程序密码请求。验证旧密码后，用新密码重新包装加密密钥（加密密钥本身不变，条目无需重新加密）。
+struct ChangeProgramPasswordRequest {
+    std::string old_password;
+    std::string new_password;
+};
+
+/// 查询 vault 状态请求（无负载）。
+struct GetVaultStatusRequest {};
 
 /// 新增条目请求。entry.id 通常为 0，由 service 分配后返回。
 struct AddEntryRequest {
@@ -130,12 +142,6 @@ struct PingResponse {
 /// 关闭响应（无负载）。
 struct ShutdownResponse {};
 
-/// 登录响应。
-struct LoginResponse {
-    bool success = false;
-    std::string error_message;
-};
-
 /// 解锁响应。
 struct UnlockResponse {
     bool success = false;
@@ -144,6 +150,30 @@ struct UnlockResponse {
 
 /// 锁定响应（无负载）。
 struct LockResponse {};
+
+/// 启用程序密码响应。
+struct EnableProgramPasswordResponse {
+    bool success = false;
+    std::string error_message;
+};
+
+/// 禁用程序密码响应。
+struct DisableProgramPasswordResponse {
+    bool success = false;
+    std::string error_message;
+};
+
+/// 修改程序密码响应。
+struct ChangeProgramPasswordResponse {
+    bool success = false;
+    std::string error_message;
+};
+
+/// vault 状态查询响应。
+struct GetVaultStatusResponse {
+    bool password_enabled = false;  ///< 是否已启用程序密码（vault.meta 是否存在）
+    bool is_locked = false;          ///< 是否处于锁定状态（password_enabled && !unlocked）
+};
 
 /// 新增条目响应。entry.id 为 service 分配的主键。
 struct AddEntryResponse {

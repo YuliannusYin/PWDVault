@@ -82,11 +82,21 @@ UI 客户端通过 `CreateFile` 打开管道，建立连接后即可双向读写
 
 ### 3.2 会话级（0x01xx）
 
-| CommandId       | 值     | 名称                | 请求结构         | 响应结构          |
-|-----------------|--------|---------------------|------------------|-------------------|
-| `Login`         | 0x0100 | 首次设置 / 验证主密码| `LoginRequest`   | `LoginResponse`   |
-| `Unlock`        | 0x0101 | 已锁定状态恢复会话 | `UnlockRequest`  | `UnlockResponse`  |
-| `Lock`          | 0x0102 | 主动锁定            | `LockRequest`    | `LockResponse`    |
+| CommandId                | 值     | 名称                       | 请求结构                       | 响应结构                        |
+|--------------------------|--------|----------------------------|--------------------------------|---------------------------------|
+| `Unlock`                 | 0x0101 | 解锁（加密模式下验证程序密码）| `UnlockRequest`                | `UnlockResponse`                |
+| `Lock`                   | 0x0102 | 主动锁定（仅加密模式可用） | `LockRequest`                  | `LockResponse`                  |
+| `EnableProgramPassword`  | 0x0103 | 启用程序密码（明文→加密）  | `EnableProgramPasswordRequest` | `EnableProgramPasswordResponse` |
+| `DisableProgramPassword` | 0x0104 | 禁用程序密码（加密→明文）  | `DisableProgramPasswordRequest`| `DisableProgramPasswordResponse`|
+| `ChangeProgramPassword`  | 0x0105 | 修改程序密码               | `ChangeProgramPasswordRequest` | `ChangeProgramPasswordResponse` |
+| `GetVaultStatus`         | 0x0106 | 查询 vault 状态            | `GetVaultStatusRequest`        | `GetVaultStatusResponse`        |
+
+> **状态机说明**：service 启动时检测 `vault.meta` 是否存在：
+> - 不存在 → 明文模式（`password_enabled=false`，自动 `unlocked=true`）
+> - 存在   → 加密模式（`password_enabled=true`，`unlocked=false`，需 `Unlock`）
+>
+> `Enable/Disable/ChangeProgramPassword` 仅在对应模式下可用；明文模式下
+> `Lock` 返回 `InvalidArgument`，`Unlock` 直接返回 `success=true`。
 
 ### 3.3 条目 CRUD（0x02xx）
 
@@ -129,25 +139,55 @@ struct ShutdownResponse {};                      // 空负载
 ### 4.2 会话级
 
 ```cpp
-struct LoginRequest {
-    std::string password;        // 主密码（首次为待设置值，否则为待验证值）
-    bool is_first_time = false;  // true=首次设置主密码，false=验证已有主密码
+struct UnlockRequest {
+    std::string password;        // 待验证的程序密码（明文模式下忽略）
 };
-struct LoginResponse {
+struct UnlockResponse {
     bool success = false;
     std::string error_message;   // 失败原因（如 "wrong password" / "too many failed attempts"）
 };
 
-struct UnlockRequest {
-    std::string password;        // 待验证的主密码
+struct LockRequest {};
+struct LockResponse {};
+
+// 启用程序密码：从明文模式切换到加密模式。
+// service 内部生成 encryption_key、用 password 派生 KEK 包装后写入 vault.meta，
+// 并对现有所有明文条目重新加密。失败时回滚（删除 vault.meta，恢复明文条目）。
+struct EnableProgramPasswordRequest {
+    std::string password;        // 新程序密码
 };
-struct UnlockResponse {
+struct EnableProgramPasswordResponse {
+    bool success = false;
+    std::string error_message;   // 例如 "program password is already enabled"
+};
+
+// 禁用程序密码：从加密模式切换回明文模式。
+// service 验证 password 后解密所有条目为明文，并删除 vault.meta。
+struct DisableProgramPasswordRequest {
+    std::string password;        // 当前程序密码（用于验证身份）
+};
+struct DisableProgramPasswordResponse {
+    bool success = false;
+    std::string error_message;   // 例如 "wrong program password"
+};
+
+// 修改程序密码：验证 old_password 后，用 new_password 重新包装 encryption_key。
+// encryption_key 本身不变，条目无需重新加密。
+struct ChangeProgramPasswordRequest {
+    std::string old_password;
+    std::string new_password;
+};
+struct ChangeProgramPasswordResponse {
     bool success = false;
     std::string error_message;
 };
 
-struct LockRequest {};
-struct LockResponse {};
+// 查询 vault 状态（UI 启动时据此决定是否显示解锁视图）。
+struct GetVaultStatusRequest {};  // 空负载
+struct GetVaultStatusResponse {
+    bool password_enabled = false;  // true=加密模式（vault.meta 存在）
+    bool is_locked = false;         // true=加密模式且未解锁
+};
 ```
 
 ### 4.3 条目 CRUD
@@ -226,10 +266,10 @@ struct ErrorResponse {
 | 值                  | 名称              | 含义                                       |
 |---------------------|-------------------|--------------------------------------------|
 | `None`              | 无错误            | 成功                                       |
-| `InvalidArgument`   | 参数非法          | 请求结构反序列化失败、字段非法等           |
-| `NotFound`          | 未找到            | 条目不存在、vault 未初始化                 |
-| `AlreadyExists`     | 已存在            | 主键 / 唯一约束冲突，或 vault 已初始化     |
-| `Unauthorized`      | 未授权            | 主密码错误、密钥不匹配、vault 已锁定       |
+| `InvalidArgument`   | 参数非法          | 请求结构反序列化失败、字段非法、明文模式下调用 Lock 等 |
+| `NotFound`          | 未找到            | 条目不存在                                 |
+| `AlreadyExists`     | 已存在            | 主键 / 唯一约束冲突                        |
+| `Unauthorized`      | 未授权            | 程序密码错误、密钥不匹配、vault 已锁定     |
 | `CryptoError`       | 加密错误          | 加密 / 解密 / 密钥派生失败                 |
 | `StorageError`      | 存储错误          | 数据库 IO、约束失败                        |
 | `IpcError`          | IPC 错误          | 命名管道通信错误、协议解析失败             |
@@ -283,18 +323,21 @@ struct PasswordGeneratorOptions {
 客户端 `IpcClient::send_request` 优先按期望响应类型反序列化，失败时按 `ErrorResponse`
 反序列化并转为 `core::Error` 返回。
 
-**特例**：`LoginResponse` / `UnlockResponse` 携带 `success=false` 字段表示「主密码错误」
-或「冷却期」，不返回 `ErrorResponse`。调用方需检查 `success` 字段而非 `Result::ok()`。
+**特例**：`UnlockResponse` / `EnableProgramPasswordResponse` /
+`DisableProgramPasswordResponse` / `ChangeProgramPasswordResponse` 携带 `success=false`
+字段表示「程序密码错误」或「冷却期」或「模式不匹配」，不返回 `ErrorResponse`。
+调用方需检查 `success` 字段而非 `Result::ok()`。
 
-| 场景                                  | 返回类型                | 关键字段                                |
-|---------------------------------------|-------------------------|-----------------------------------------|
-| 主密码错误（unlock / login）          | `UnlockResponse` 等     | `success=false`, `error_message` 非空  |
-| 5 次失败后冷却期                      | `UnlockResponse`        | `success=false`, `"too many failed attempts"` |
-| vault 已锁定，访问 CRUD               | `ErrorResponse`         | `code=Unauthorized`                     |
-| vault 未初始化，unlock / login        | `ErrorResponse`         | `code=NotFound`                         |
-| 重复 first_time login                 | `ErrorResponse`         | `code=AlreadyExists`                    |
-| 条目不存在（get / remove / update）   | `ErrorResponse`         | `code=NotFound`                         |
-| 请求结构反序列化失败                  | `ErrorResponse`         | `code=InvalidArgument`                  |
+| 场景                                  | 返回类型                          | 关键字段                                |
+|---------------------------------------|-----------------------------------|-----------------------------------------|
+| 程序密码错误（unlock / disable / change）| `*Response`（带 success 字段）| `success=false`, `error_message` 非空   |
+| 5 次失败后冷却期                      | `UnlockResponse`                  | `success=false`, `"too many failed attempts"` |
+| 加密模式下重复 Enable                 | `EnableProgramPasswordResponse`   | `success=false`, `"already enabled"`    |
+| 明文模式下调用 Disable / Change       | `*Response`（带 success 字段）    | `success=false`, `error_message` 非空   |
+| 明文模式下调用 Lock                   | `ErrorResponse`                   | `code=InvalidArgument`                  |
+| vault 已锁定，访问 CRUD               | `ErrorResponse`                   | `code=Unauthorized`                     |
+| 条目不存在（get / remove / update）   | `ErrorResponse`                   | `code=NotFound`                         |
+| 请求结构反序列化失败                  | `ErrorResponse`                   | `code=InvalidArgument`                  |
 
 ## 6. 通信流程示例
 
@@ -415,12 +458,12 @@ if (r.ok()) return Result<AddEntryResponse>::Ok(...);
 - **新增命令**：在 `CommandId` 追加枚举值，保持值唯一且不复用旧值，以维持向前兼容性。
   旧客户端发往新 service 的新命令会被 `handle_request` 默认分支拒绝。
 - **meta 文件版本**：`vault.meta` 自带 `magic + version` 字段，未来不兼容变更需递增
-  version 并在 `MasterKeyStore::read_meta` 中按 version 分支处理。
+  version 并在 `ProgramPasswordStore::read_meta` 中按 version 分支处理。
 
 ## 8. 相关文档
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)：架构设计与数据流总览
-- [SECURITY.md](SECURITY.md)：加密方案与主密码保护
+- [SECURITY.md](SECURITY.md)：加密方案与程序密码保护
 - [BUILD.md](BUILD.md)：构建与运行测试
 - 源码：`src/sdk/protocol/Commands.h`、`Messages.h`、`Serializer.h/.cpp`
 - 源码：`src/ui/IpcClient.h/.cpp`、`src/service/IpcServer.h/.cpp`、`src/service/ServiceCore.h/.cpp`

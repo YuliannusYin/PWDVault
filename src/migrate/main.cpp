@@ -5,25 +5,32 @@
 // PwdVault 旧数据迁移工具（pwdvault-migrate.exe）。
 //
 // 用途：将旧版 Python 密码管理器（PasswordManager）遗留的数据迁移到新版
-// PwdVault 的加密存储格式。
+// PwdVault 的存储格式。支持两种目标模式：
+//   - 明文模式（--no-password）：不启用程序密码，password 字段以明文存储，
+//     iv/tag 列为空 BLOB，不生成 vault.meta 文件。
+//   - 加密模式（默认/--program-password）：启用程序密码，password 字段为
+//     AES-256-GCM 密文 + iv + tag，并生成 vault.meta（Argon2id salt + 加密的
+//     encryption_key）。
 //
 // 旧版数据布局（%APPDATA%\PasswordManager\）：
 //   - passwords.db （SQLite，明文存储；password 字段为 Fernet 加密密文）
 //   - key.key      （Fernet 密钥，URL-safe base64 编码的 32 字节）
 //
 // 新版数据布局（%APPDATA%\PwdVault\）：
-//   - vault.db   （SQLite，password 字段为 AES-256-GCM 密文 + iv + tag）
-//   - vault.meta （Argon2id salt + 加密的 master_key）
+//   - vault.db   （SQLite；明文模式下 password=明文 / iv=空 / tag=空；
+//                  加密模式下 password=AES-256-GCM 密文 / iv / tag）
+//   - vault.meta （仅加密模式：Argon2id salt + 加密的 encryption_key）
 //
 // 流程：
-//   1. 解析命令行参数（--old-db / --old-key / --new-db / --master-password /
-//      --dry-run / --help）
+//   1. 解析命令行参数（--old-db / --old-key / --new-db / --program-password /
+//      --no-password / --dry-run / --help）
 //   2. 检查旧文件存在性
 //   3. 读取并解析旧 key.key
 //   4. 打开旧 SQLite，读取 passwords 表所有记录
-//   5. 初始化新 MasterKeyStore（用 master_password）
-//   6. 创建新 StorageEngine + CryptoEngine（master_key）
-//   7. 逐条记录：Fernet 解密 → 构造 PasswordEntry → AES-256-GCM 加密 → 写入
+//   5. 若加密模式：初始化 ProgramPasswordStore（用 program_password）
+//   6. 创建新 StorageEngine；加密模式下另建 entry CryptoEngine（encryption_key）
+//   7. 逐条记录：Fernet 解密 → 构造 PasswordEntry →
+//      加密模式：AES-256-GCM 加密；明文模式：直接保留明文 → 写入
 //   8. 打印迁移统计
 //
 // 不链接 Qt；链接 PwdVault::Sdk + OpenSSL + SQLite + libsodium。
@@ -55,7 +62,7 @@
 #include <sqlite3.h>
 
 #include "CryptoEngine.h"
-#include "MasterKeyStore.h"
+#include "ProgramPasswordStore.h"
 #include "StorageEngine.h"
 #include "Types.h"
 
@@ -139,10 +146,11 @@ struct CliArgs {
     std::filesystem::path old_db_path;
     std::filesystem::path old_key_path;
     std::filesystem::path new_db_path;
-    std::string master_password;
+    std::string program_password;
     bool dry_run = false;
     bool show_help = false;
     bool interactive_password = true;
+    bool no_password = false;  // --no-password：迁移为明文模式（不启用程序密码）
 };
 
 void print_help() {
@@ -157,10 +165,16 @@ void print_help() {
         "                             (default: %APPDATA%\\PasswordManager\\key.key)\n"
         "  --new-db=<path>            Path to new vault.db\n"
         "                             (default: %APPDATA%\\PwdVault\\vault.db)\n"
-        "  --master-password=<pw>     New master password (insecure on CLI;\n"
+        "  --program-password=<pw>    New program password (insecure on CLI;\n"
         "                             if omitted, prompted interactively)\n"
+        "  --no-password              Migrate to plaintext mode (no program password;\n"
+        "                             entries stored unencrypted, no vault.meta)\n"
         "  --dry-run                  Only count entries to migrate; do not write\n"
         "  --help, -h                 Show this help and exit\n"
+        "\n"
+        "Mutual exclusion:\n"
+        "  --program-password and --no-password are mutually exclusive.\n"
+        "  If neither is given, you will be prompted for a program password.\n"
         "\n"
         "Exit codes:\n"
         "  0  success\n"
@@ -199,6 +213,11 @@ CliArgs parse_args(int argc, char* argv[]) {
             args.dry_run = true;
             continue;
         }
+        if (a == "--no-password") {
+            args.no_password = true;
+            args.interactive_password = false;
+            continue;
+        }
 
         if (auto [ok, v] = extract_value(a, "--old-db="); ok) {
             args.old_db_path = std::filesystem::path(std::string(v));
@@ -212,13 +231,25 @@ CliArgs parse_args(int argc, char* argv[]) {
             args.new_db_path = std::filesystem::path(std::string(v));
             continue;
         }
+        if (auto [ok, v] = extract_value(a, "--program-password="); ok) {
+            args.program_password = std::string(v);
+            args.interactive_password = false;
+            continue;
+        }
+        // 向后兼容：旧版参数名 --master-password 仍被接受，等价于 --program-password
         if (auto [ok, v] = extract_value(a, "--master-password="); ok) {
-            args.master_password = std::string(v);
+            args.program_password = std::string(v);
             args.interactive_password = false;
             continue;
         }
 
         log_error(std::string("Unknown argument: ") + std::string(a));
+        args.show_help = true;
+    }
+
+    // 互斥校验：--program-password 与 --no-password 不能同时使用
+    if (args.no_password && !args.program_password.empty()) {
+        log_error("--no-password and --program-password are mutually exclusive.");
         args.show_help = true;
     }
 
@@ -371,23 +402,27 @@ int run_migration(const CliArgs& args) {
         return 0;
     }
 
-    // 5. 解析 master password
-    std::string master_password = args.master_password;
-    if (args.interactive_password) {
-        std::string p1 = read_password_from_console("Enter new master password: ");
-        std::string p2 = read_password_from_console("Confirm new master password: ");
-        if (p1 != p2) {
-            log_error("Passwords do not match.");
+    // 5. 解析 program password（明文模式下跳过）
+    std::string program_password = args.program_password;
+    if (!args.no_password) {
+        if (args.interactive_password) {
+            std::string p1 = read_password_from_console("Enter new program password: ");
+            std::string p2 = read_password_from_console("Confirm new program password: ");
+            if (p1 != p2) {
+                log_error("Passwords do not match.");
+                return 1;
+            }
+            if (p1.empty()) {
+                log_error("Program password must not be empty.");
+                return 1;
+            }
+            program_password = std::move(p1);
+        } else if (program_password.empty()) {
+            log_error("Program password must not be empty.");
             return 1;
         }
-        if (p1.empty()) {
-            log_error("Master password must not be empty.");
-            return 1;
-        }
-        master_password = std::move(p1);
-    } else if (master_password.empty()) {
-        log_error("Master password must not be empty.");
-        return 1;
+    } else {
+        log_line("INFO", "Migrating to plaintext mode (no program password).");
     }
 
     // 6. 确保新数据目录存在
@@ -398,39 +433,55 @@ int run_migration(const CliArgs& args) {
         return 1;
     }
 
-    // 7. 初始化新的 MasterKeyStore
+    // 7. 加密模式下初始化 ProgramPasswordStore
     //    若 vault.meta 已存在，则报错（迁移目标必须为空库，避免覆盖现有数据）
     auto meta_path = args.new_db_path.parent_path() / kNewMetaName;
-    pwdvault::service::MasterKeyStore key_store(meta_path);
-    if (key_store.exists()) {
-        log_error(std::string("Target vault.meta already exists: ") + meta_path.string() +
-                  ". Refusing to overwrite an initialized vault. "
-                  "Please remove it manually if you intend to reinitialize.");
-        return 1;
-    }
-
-    // CryptoEngine 构造时 master_key 可为空（仅用于 derive_key）
-    pwdvault::crypto::CryptoEngine kek_crypto(pwdvault::core::ByteSpan{});
-    auto init_result = key_store.initialize(master_password, kek_crypto);
-    if (!init_result.ok()) {
-        log_error(std::string("Failed to initialize master key store: ") +
-                  init_result.error().what());
-        return 1;
-    }
-    pwdvault::core::ByteVec master_key = std::move(init_result).value();
-    struct MasterKeyZeroer {
+    pwdvault::core::ByteVec encryption_key;
+    struct EncryptionKeyZeroer {
         pwdvault::core::ByteVec& v;
-        ~MasterKeyZeroer() {
+        ~EncryptionKeyZeroer() {
             if (!v.empty()) {
                 sodium_memzero(v.data(), v.size());
             }
         }
-    } mk_zeroer{master_key};
+    } ek_zeroer{encryption_key};
 
-    // 8. 创建新 StorageEngine + entry 加密用 CryptoEngine
+    if (!args.no_password) {
+        pwdvault::service::ProgramPasswordStore key_store(meta_path);
+        if (key_store.exists()) {
+            log_error(std::string("Target vault.meta already exists: ") + meta_path.string() +
+                      ". Refusing to overwrite an initialized vault. "
+                      "Please remove it manually if you intend to reinitialize.");
+            return 1;
+        }
+
+        // CryptoEngine 构造时 encryption_key 可为空（仅用于 derive_key）
+        pwdvault::crypto::CryptoEngine kek_crypto(pwdvault::core::ByteSpan{});
+        auto init_result = key_store.initialize(program_password, kek_crypto);
+        if (!init_result.ok()) {
+            log_error(std::string("Failed to initialize program password store: ") +
+                      init_result.error().what());
+            return 1;
+        }
+        encryption_key = std::move(init_result).value();
+    } else {
+        // 明文模式：若已存在 vault.meta，则报错
+        if (std::filesystem::exists(meta_path)) {
+            log_error(std::string("Target vault.meta already exists: ") + meta_path.string() +
+                      ". Refusing to migrate in --no-password mode with an existing "
+                      "encrypted vault. Please remove it manually if you intend to "
+                      "reinitialize as plaintext.");
+            return 1;
+        }
+    }
+
+    // 8. 创建新 StorageEngine；加密模式下另建 entry 加密用 CryptoEngine
     pwdvault::storage::StorageEngine storage(args.new_db_path);
-    pwdvault::crypto::CryptoEngine entry_crypto(
-        pwdvault::core::ByteSpan(master_key.data(), master_key.size()));
+    std::unique_ptr<pwdvault::crypto::CryptoEngine> entry_crypto;
+    if (!args.no_password) {
+        entry_crypto = std::make_unique<pwdvault::crypto::CryptoEngine>(
+            pwdvault::core::ByteSpan(encryption_key.data(), encryption_key.size()));
+    }
 
     // 9. 开启事务，逐条迁移
     if (auto e = storage.begin_transaction(); !e.ok()) {
@@ -461,33 +512,39 @@ int run_migration(const CliArgs& args) {
         entry.password = plaintext_password;
         entry.note = legacy.note;
 
-        // 9c. 用 entry_crypto 加密 password → [IV(12) || ciphertext || tag(16)]
-        pwdvault::core::ByteSpan plain_span(
-            reinterpret_cast<const std::byte*>(entry.password.data()),
-            entry.password.size());
-        auto enc = entry_crypto.encrypt(plain_span);
-        if (!enc.ok()) {
-            log_error(std::string("Encrypt failed for entry #") + std::to_string(idx) +
-                      " (id=" + std::to_string(legacy.id) + "): " + enc.error().what());
-            ++fail_count;
-            continue;
+        if (args.no_password) {
+            // 明文模式：password 保持明文，iv/tag 留空
+            entry.iv.clear();
+            entry.tag.clear();
+        } else {
+            // 加密模式：用 entry_crypto 加密 password → [IV(12) || ciphertext || tag(16)]
+            pwdvault::core::ByteSpan plain_span(
+                reinterpret_cast<const std::byte*>(entry.password.data()),
+                entry.password.size());
+            auto enc = entry_crypto->encrypt(plain_span);
+            if (!enc.ok()) {
+                log_error(std::string("Encrypt failed for entry #") + std::to_string(idx) +
+                          " (id=" + std::to_string(legacy.id) + "): " + enc.error().what());
+                ++fail_count;
+                continue;
+            }
+            const auto& blob = enc.value();
+            // 解析 blob：[IV(12) || ciphertext || tag(16)]
+            constexpr size_t kIvLen = 12;
+            constexpr size_t kTagLen = 16;
+            if (blob.size() < kIvLen + kTagLen) {
+                log_error(std::string("Internal error: encrypted blob too short for entry #") +
+                          std::to_string(idx));
+                ++fail_count;
+                continue;
+            }
+            entry.password.assign(reinterpret_cast<const char*>(blob.data() + kIvLen),
+                                  blob.size() - kIvLen - kTagLen);
+            entry.iv.assign(blob.begin(), blob.begin() + kIvLen);
+            entry.tag.assign(blob.end() - kTagLen, blob.end());
         }
-        const auto& blob = enc.value();
-        // 解析 blob：[IV(12) || ciphertext || tag(16)]
-        constexpr size_t kIvLen = 12;
-        constexpr size_t kTagLen = 16;
-        if (blob.size() < kIvLen + kTagLen) {
-            log_error(std::string("Internal error: encrypted blob too short for entry #") +
-                      std::to_string(idx));
-            ++fail_count;
-            continue;
-        }
-        entry.password.assign(reinterpret_cast<const char*>(blob.data() + kIvLen),
-                              blob.size() - kIvLen - kTagLen);
-        entry.iv.assign(blob.begin(), blob.begin() + kIvLen);
-        entry.tag.assign(blob.end() - kTagLen, blob.end());
 
-        // 9d. 写入新库
+        // 9c. 写入新库
         auto add_result = storage.add_entry(entry);
         if (!add_result.ok()) {
             log_error(std::string("Add entry failed for entry #") + std::to_string(idx) +
@@ -523,6 +580,10 @@ int run_migration(const CliArgs& args) {
     std::cout << "  Total legacy entries : " << legacy_entries.size() << '\n';
     std::cout << "  Successfully migrated: " << success_count << '\n';
     std::cout << "  Failed               : " << fail_count << '\n';
+    std::cout << "  Mode                 : "
+              << (args.no_password ? "plaintext (no program password)"
+                                   : "encrypted (program password enabled)")
+              << '\n';
     std::cout << "========================================\n";
     std::cout << "\nLegacy data location (please back up and then delete after verifying):\n";
     std::cout << "  " << args.old_db_path.parent_path().string() << "\n";

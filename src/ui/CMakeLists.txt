@@ -10,7 +10,8 @@ add_executable(pwdvault-ui WIN32
     main.cpp
     MainWindow.cpp
     IpcClient.cpp
-    views/LoginView.cpp
+    views/UnlockView.cpp
+    views/ProgramPasswordDialog.cpp
     views/PasswordBookView.cpp
     views/InputView.cpp
     views/GeneratorView.cpp

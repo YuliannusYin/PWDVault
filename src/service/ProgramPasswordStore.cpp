@@ -1,6 +1,6 @@
 // coding: utf-8
 // =============================================================================
-// MasterKeyStore.cpp
+// ProgramPasswordStore.cpp
 //
 // meta 文件二进制格式：
 //   offset  size      field
@@ -9,9 +9,9 @@
 //   6       4         salt_len    = 16
 //   10      16        salt
 //   26      4         blob_len    = 60 (12 IV + 32 ciphertext + 16 tag)
-//   30      blob_len  encrypted_master_key_blob  = [IV || ciphertext || tag]
+//   30      blob_len  encrypted_encryption_key_blob  = [IV || ciphertext || tag]
 // =============================================================================
-#include "MasterKeyStore.h"
+#include "ProgramPasswordStore.h"
 
 #include <cstdint>
 #include <cstring>
@@ -32,7 +32,7 @@ namespace {
 constexpr uint32_t kMetaMagic = 0x4D4B5650u;  // 'P','V','K','M' little-endian
 constexpr uint16_t kMetaVersion = 1;
 constexpr size_t kSaltLen = 16;
-constexpr size_t kMasterKeyLen = 32;
+constexpr size_t kEncryptionKeyLen = 32;
 
 /// meta 文件在内存中的解析结果。
 struct MetaRecord {
@@ -102,7 +102,7 @@ core::Result<MetaRecord> read_meta(const std::filesystem::path& path) {
         return core::Result<MetaRecord>::Err(
             core::Error(core::ErrorCode::StorageError, "meta file truncated (blob_len)"));
     }
-    // 粗略上界保护：master_key 加密后最长 12 + N + 16，N 不会超过 64KB
+    // 粗略上界保护：encryption_key 加密后最长 12 + N + 16，N 不会超过 64KB
     if (blob_len > 65536) {
         return core::Result<MetaRecord>::Err(
             core::Error(core::ErrorCode::StorageError, "meta file blob too large"));
@@ -139,22 +139,22 @@ core::Error write_meta(const std::filesystem::path& path, const MetaRecord& rec)
 
 }  // namespace
 
-MasterKeyStore::MasterKeyStore(std::filesystem::path meta_path)
+ProgramPasswordStore::ProgramPasswordStore(std::filesystem::path meta_path)
     : meta_path_(std::move(meta_path)) {}
 
-MasterKeyStore::~MasterKeyStore() = default;
+ProgramPasswordStore::~ProgramPasswordStore() = default;
 
-bool MasterKeyStore::exists() const {
+bool ProgramPasswordStore::exists() const {
     std::error_code ec;
     return std::filesystem::exists(meta_path_, ec);
 }
 
-core::Result<core::ByteVec> MasterKeyStore::initialize(const std::string& master_password,
-                                                        core::ICryptoEngine& crypto) {
+core::Result<core::ByteVec> ProgramPasswordStore::initialize(const std::string& program_password,
+                                                              core::ICryptoEngine& crypto) {
     if (exists()) {
         return core::Result<core::ByteVec>::Err(
             core::Error(core::ErrorCode::AlreadyExists,
-                        "vault already initialized"));
+                        "program password already enabled"));
     }
 
     // 1. 生成 16 字节 salt
@@ -162,7 +162,7 @@ core::Result<core::ByteVec> MasterKeyStore::initialize(const std::string& master
     randombytes_buf(salt.data(), kSaltLen);
 
     // 2. 用 password + salt 派生 KEK（32 字节）
-    auto kek_result = crypto.derive_key(master_password, salt);
+    auto kek_result = crypto.derive_key(program_password, salt);
     if (!kek_result) {
         return core::Result<core::ByteVec>::Err(kek_result.error());
     }
@@ -174,18 +174,18 @@ core::Result<core::ByteVec> MasterKeyStore::initialize(const std::string& master
         ~KekZeroer() { secure_zero(v); }
     } kek_zeroer{kek};
 
-    // 3. 生成 32 字节 master_key
+    // 3. 生成 32 字节 encryption_key
     auto gen_result = crypto.generate_key_and_iv();
     if (!gen_result) {
         return core::Result<core::ByteVec>::Err(gen_result.error());
     }
-    core::ByteVec master_key = std::move(gen_result->first);
+    core::ByteVec encryption_key = std::move(gen_result->first);
 
-    // 4. 用 KEK 构造临时 CryptoEngine，加密 master_key
+    // 4. 用 KEK 构造临时 CryptoEngine，加密 encryption_key
     crypto::CryptoEngine kek_engine(kek);
-    auto enc_result = kek_engine.encrypt(master_key);
+    auto enc_result = kek_engine.encrypt(encryption_key);
     if (!enc_result) {
-        secure_zero(master_key);
+        secure_zero(encryption_key);
         return core::Result<core::ByteVec>::Err(enc_result.error());
     }
 
@@ -195,15 +195,15 @@ core::Result<core::ByteVec> MasterKeyStore::initialize(const std::string& master
     rec.encrypted_blob = std::move(*enc_result);
     core::Error err = write_meta(meta_path_, rec);
     if (!err.ok()) {
-        secure_zero(master_key);
+        secure_zero(encryption_key);
         return core::Result<core::ByteVec>::Err(err);
     }
 
-    return core::Result<core::ByteVec>::Ok(std::move(master_key));
+    return core::Result<core::ByteVec>::Ok(std::move(encryption_key));
 }
 
-core::Result<core::ByteVec> MasterKeyStore::unlock(const std::string& master_password,
-                                                    core::ICryptoEngine& crypto) {
+core::Result<core::ByteVec> ProgramPasswordStore::unlock(const std::string& program_password,
+                                                          core::ICryptoEngine& crypto) {
     auto meta_result = read_meta(meta_path_);
     if (!meta_result) {
         return core::Result<core::ByteVec>::Err(meta_result.error());
@@ -211,7 +211,7 @@ core::Result<core::ByteVec> MasterKeyStore::unlock(const std::string& master_pas
     const MetaRecord& rec = *meta_result;
 
     // 1. 用 password + salt 派生 KEK
-    auto kek_result = crypto.derive_key(master_password, rec.salt);
+    auto kek_result = crypto.derive_key(program_password, rec.salt);
     if (!kek_result) {
         return core::Result<core::ByteVec>::Err(kek_result.error());
     }
@@ -222,27 +222,110 @@ core::Result<core::ByteVec> MasterKeyStore::unlock(const std::string& master_pas
         ~KekZeroer() { secure_zero(v); }
     } kek_zeroer{kek};
 
-    // 2. 用 KEK 构造临时 CryptoEngine，解密 master_key
+    // 2. 用 KEK 构造临时 CryptoEngine，解密 encryption_key
     crypto::CryptoEngine kek_engine(kek);
     auto dec_result = kek_engine.decrypt(rec.encrypted_blob);
     if (!dec_result) {
-        // GCM tag 校验失败 → 主密码错误
+        // GCM tag 校验失败 → 程序密码错误
         return core::Result<core::ByteVec>::Err(
             core::Error(core::ErrorCode::Unauthorized,
-                        "master password incorrect"));
+                        "program password incorrect"));
     }
 
     // 3. 校验长度并转回 ByteVec
     const auto* mk_ptr = reinterpret_cast<const std::byte*>(dec_result->data());
-    core::ByteVec master_key(mk_ptr, mk_ptr + dec_result->size());
-    if (master_key.size() != kMasterKeyLen) {
-        secure_zero(master_key);
+    core::ByteVec encryption_key(mk_ptr, mk_ptr + dec_result->size());
+    if (encryption_key.size() != kEncryptionKeyLen) {
+        secure_zero(encryption_key);
         return core::Result<core::ByteVec>::Err(
             core::Error(core::ErrorCode::CryptoError,
-                        "decrypted master key length mismatch"));
+                        "decrypted encryption key length mismatch"));
     }
 
-    return core::Result<core::ByteVec>::Ok(std::move(master_key));
+    return core::Result<core::ByteVec>::Ok(std::move(encryption_key));
+}
+
+core::Error ProgramPasswordStore::change_password(const std::string& old_password,
+                                                   const std::string& new_password,
+                                                   core::ICryptoEngine& crypto) {
+    // 1. 读取现有 meta 并用旧密码解密 encryption_key
+    auto meta_result = read_meta(meta_path_);
+    if (!meta_result) {
+        return meta_result.error();
+    }
+    const MetaRecord& old_rec = *meta_result;
+
+    auto old_kek_result = crypto.derive_key(old_password, old_rec.salt);
+    if (!old_kek_result) {
+        return old_kek_result.error();
+    }
+    core::ByteVec old_kek = std::move(old_kek_result).value();
+
+    struct KekZeroer {
+        core::ByteVec& v;
+        ~KekZeroer() { secure_zero(v); }
+    } old_kek_zeroer{old_kek};
+
+    crypto::CryptoEngine old_kek_engine(old_kek);
+    auto dec_result = old_kek_engine.decrypt(old_rec.encrypted_blob);
+    if (!dec_result) {
+        return core::Error(core::ErrorCode::Unauthorized,
+                           "old program password incorrect");
+    }
+
+    const auto* ek_ptr = reinterpret_cast<const std::byte*>(dec_result->data());
+    core::ByteVec encryption_key(ek_ptr, ek_ptr + dec_result->size());
+    if (encryption_key.size() != kEncryptionKeyLen) {
+        secure_zero(encryption_key);
+        return core::Error(core::ErrorCode::CryptoError,
+                           "decrypted encryption key length mismatch");
+    }
+
+    struct EkZeroer {
+        core::ByteVec& v;
+        ~EkZeroer() { secure_zero(v); }
+    } ek_zeroer{encryption_key};
+
+    // 2. 生成新 salt 并用新密码派生新 KEK
+    core::ByteVec new_salt(kSaltLen);
+    randombytes_buf(new_salt.data(), kSaltLen);
+
+    auto new_kek_result = crypto.derive_key(new_password, new_salt);
+    if (!new_kek_result) {
+        return new_kek_result.error();
+    }
+    core::ByteVec new_kek = std::move(new_kek_result).value();
+
+    struct NewKekZeroer {
+        core::ByteVec& v;
+        ~NewKekZeroer() { secure_zero(v); }
+    } new_kek_zeroer{new_kek};
+
+    // 3. 用新 KEK 重新加密 encryption_key
+    crypto::CryptoEngine new_kek_engine(new_kek);
+    auto enc_result = new_kek_engine.encrypt(encryption_key);
+    if (!enc_result) {
+        return enc_result.error();
+    }
+
+    // 4. 覆写 meta 文件
+    MetaRecord new_rec;
+    new_rec.salt = new_salt;
+    new_rec.encrypted_blob = std::move(*enc_result);
+    return write_meta(meta_path_, new_rec);
+}
+
+core::Error ProgramPasswordStore::destroy() {
+    std::error_code ec;
+    if (!std::filesystem::exists(meta_path_, ec)) {
+        return core::Error{};  // 已不存在，视为成功
+    }
+    std::filesystem::remove(meta_path_, ec);
+    if (ec) {
+        return core::Error(core::ErrorCode::StorageError,
+                           "failed to delete meta file: " + ec.message());
+    }
+    return core::Error{};
 }
 
 }  // namespace pwdvault::service

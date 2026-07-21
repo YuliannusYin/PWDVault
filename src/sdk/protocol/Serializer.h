@@ -17,16 +17,16 @@
 //
 // 用法示例：
 // \code
-//   LoginRequest req{ "master-pwd", true };
+//   UnlockRequest req{ "program-pwd" };
 //   core::ByteVec payload = serialize(req);
-//   core::ByteVec frame  = pack_message(CommandId::Login, 42, payload);
+//   core::ByteVec frame  = pack_message(CommandId::Unlock, 42, payload);
 //   // ... 通过命名管道发送 frame ...
 //
 //   auto ph = parse_header(received_span);
 //   if (ph) {
 //       const auto& [hdr, offset] = ph.value();
 //       core::ByteSpan payload_span = received_span.subspan(offset, hdr.payload_size);
-//       auto resp = deserialize<LoginResponse>(payload_span);
+//       auto resp = deserialize<UnlockResponse>(payload_span);
 //   }
 // \endcode
 // =============================================================================
@@ -110,14 +110,23 @@ template <> core::Result<PingRequest> deserialize<PingRequest>(core::ByteSpan);
 template <> core::ByteVec serialize<ShutdownRequest>(const ShutdownRequest&);
 template <> core::Result<ShutdownRequest> deserialize<ShutdownRequest>(core::ByteSpan);
 
-template <> core::ByteVec serialize<LoginRequest>(const LoginRequest&);
-template <> core::Result<LoginRequest> deserialize<LoginRequest>(core::ByteSpan);
-
 template <> core::ByteVec serialize<UnlockRequest>(const UnlockRequest&);
 template <> core::Result<UnlockRequest> deserialize<UnlockRequest>(core::ByteSpan);
 
 template <> core::ByteVec serialize<LockRequest>(const LockRequest&);
 template <> core::Result<LockRequest> deserialize<LockRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<EnableProgramPasswordRequest>(const EnableProgramPasswordRequest&);
+template <> core::Result<EnableProgramPasswordRequest> deserialize<EnableProgramPasswordRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<DisableProgramPasswordRequest>(const DisableProgramPasswordRequest&);
+template <> core::Result<DisableProgramPasswordRequest> deserialize<DisableProgramPasswordRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<ChangeProgramPasswordRequest>(const ChangeProgramPasswordRequest&);
+template <> core::Result<ChangeProgramPasswordRequest> deserialize<ChangeProgramPasswordRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<GetVaultStatusRequest>(const GetVaultStatusRequest&);
+template <> core::Result<GetVaultStatusRequest> deserialize<GetVaultStatusRequest>(core::ByteSpan);
 
 template <> core::ByteVec serialize<AddEntryRequest>(const AddEntryRequest&);
 template <> core::Result<AddEntryRequest> deserialize<AddEntryRequest>(core::ByteSpan);
@@ -153,14 +162,23 @@ template <> core::Result<PingResponse> deserialize<PingResponse>(core::ByteSpan)
 template <> core::ByteVec serialize<ShutdownResponse>(const ShutdownResponse&);
 template <> core::Result<ShutdownResponse> deserialize<ShutdownResponse>(core::ByteSpan);
 
-template <> core::ByteVec serialize<LoginResponse>(const LoginResponse&);
-template <> core::Result<LoginResponse> deserialize<LoginResponse>(core::ByteSpan);
-
 template <> core::ByteVec serialize<UnlockResponse>(const UnlockResponse&);
 template <> core::Result<UnlockResponse> deserialize<UnlockResponse>(core::ByteSpan);
 
 template <> core::ByteVec serialize<LockResponse>(const LockResponse&);
 template <> core::Result<LockResponse> deserialize<LockResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<EnableProgramPasswordResponse>(const EnableProgramPasswordResponse&);
+template <> core::Result<EnableProgramPasswordResponse> deserialize<EnableProgramPasswordResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<DisableProgramPasswordResponse>(const DisableProgramPasswordResponse&);
+template <> core::Result<DisableProgramPasswordResponse> deserialize<DisableProgramPasswordResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<ChangeProgramPasswordResponse>(const ChangeProgramPasswordResponse&);
+template <> core::Result<ChangeProgramPasswordResponse> deserialize<ChangeProgramPasswordResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<GetVaultStatusResponse>(const GetVaultStatusResponse&);
+template <> core::Result<GetVaultStatusResponse> deserialize<GetVaultStatusResponse>(core::ByteSpan);
 
 template <> core::ByteVec serialize<AddEntryResponse>(const AddEntryResponse&);
 template <> core::Result<AddEntryResponse> deserialize<AddEntryResponse>(core::ByteSpan);

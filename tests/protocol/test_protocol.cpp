@@ -76,9 +76,12 @@ TEST(ProtocolCommandName, KnownCommands) {
     using namespace pwdvault::protocol;
     EXPECT_EQ(command_name(CommandId::Ping), "Ping");
     EXPECT_EQ(command_name(CommandId::Shutdown), "Shutdown");
-    EXPECT_EQ(command_name(CommandId::Login), "Login");
     EXPECT_EQ(command_name(CommandId::Unlock), "Unlock");
     EXPECT_EQ(command_name(CommandId::Lock), "Lock");
+    EXPECT_EQ(command_name(CommandId::EnableProgramPassword), "EnableProgramPassword");
+    EXPECT_EQ(command_name(CommandId::DisableProgramPassword), "DisableProgramPassword");
+    EXPECT_EQ(command_name(CommandId::ChangeProgramPassword), "ChangeProgramPassword");
+    EXPECT_EQ(command_name(CommandId::GetVaultStatus), "GetVaultStatus");
     EXPECT_EQ(command_name(CommandId::AddEntry), "AddEntry");
     EXPECT_EQ(command_name(CommandId::UpdateEntry), "UpdateEntry");
     EXPECT_EQ(command_name(CommandId::RemoveEntry), "RemoveEntry");
@@ -282,24 +285,50 @@ TEST(ProtocolRequestRoundtrip, PingRequest) {
     ASSERT_TRUE(r.ok()) << r.error().what();
 }
 
-TEST(ProtocolRequestRoundtrip, LoginRequestFirstTime) {
+TEST(ProtocolRequestRoundtrip, UnlockRequest) {
     using namespace pwdvault::protocol;
-    LoginRequest orig{ "master-password-123", true };
+    UnlockRequest orig{ "program-password-123" };
     auto bytes = serialize(orig);
-    auto r = deserialize<LoginRequest>(bytes);
+    auto r = deserialize<UnlockRequest>(bytes);
     ASSERT_TRUE(r.ok()) << r.error().what();
     EXPECT_EQ(r.value().password, orig.password);
-    EXPECT_TRUE(r.value().is_first_time);
 }
 
-TEST(ProtocolRequestRoundtrip, LoginRequestNotFirstTime) {
+TEST(ProtocolRequestRoundtrip, EnableProgramPasswordRequest) {
     using namespace pwdvault::protocol;
-    LoginRequest orig{ "another-pwd", false };
+    EnableProgramPasswordRequest orig{ "new-program-pwd" };
     auto bytes = serialize(orig);
-    auto r = deserialize<LoginRequest>(bytes);
+    auto r = deserialize<EnableProgramPasswordRequest>(bytes);
     ASSERT_TRUE(r.ok()) << r.error().what();
     EXPECT_EQ(r.value().password, orig.password);
-    EXPECT_FALSE(r.value().is_first_time);
+}
+
+TEST(ProtocolRequestRoundtrip, DisableProgramPasswordRequest) {
+    using namespace pwdvault::protocol;
+    DisableProgramPasswordRequest orig{ "current-pwd" };
+    auto bytes = serialize(orig);
+    auto r = deserialize<DisableProgramPasswordRequest>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_EQ(r.value().password, orig.password);
+}
+
+TEST(ProtocolRequestRoundtrip, ChangeProgramPasswordRequest) {
+    using namespace pwdvault::protocol;
+    ChangeProgramPasswordRequest orig{ "old-pwd", "new-pwd" };
+    auto bytes = serialize(orig);
+    auto r = deserialize<ChangeProgramPasswordRequest>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_EQ(r.value().old_password, orig.old_password);
+    EXPECT_EQ(r.value().new_password, orig.new_password);
+}
+
+TEST(ProtocolRequestRoundtrip, GetVaultStatusRequest) {
+    using namespace pwdvault::protocol;
+    GetVaultStatusRequest orig;
+    auto bytes = serialize(orig);
+    EXPECT_TRUE(bytes.empty());  // 空请求应产生空负载
+    auto r = deserialize<GetVaultStatusRequest>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
 }
 
 TEST(ProtocolRequestRoundtrip, AddEntryRequest) {
@@ -388,6 +417,7 @@ TEST(ProtocolRequestRoundtrip, EmptyRequests) {
     EXPECT_TRUE(deserialize<ShutdownRequest>(serialize(ShutdownRequest{})).ok());
     EXPECT_TRUE(deserialize<LockRequest>(serialize(LockRequest{})).ok());
     EXPECT_TRUE(deserialize<ListEntriesRequest>(serialize(ListEntriesRequest{})).ok());
+    EXPECT_TRUE(deserialize<GetVaultStatusRequest>(serialize(GetVaultStatusRequest{})).ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -403,24 +433,91 @@ TEST(ProtocolResponseRoundtrip, PingResponse) {
     EXPECT_EQ(r.value().server_timestamp, orig.server_timestamp);
 }
 
-TEST(ProtocolResponseRoundtrip, LoginResponse) {
+TEST(ProtocolResponseRoundtrip, UnlockResponseSuccess) {
     using namespace pwdvault::protocol;
-    LoginResponse orig{ true, "" };
+    UnlockResponse orig{ true, "" };
     auto bytes = serialize(orig);
-    auto r = deserialize<LoginResponse>(bytes);
+    auto r = deserialize<UnlockResponse>(bytes);
     ASSERT_TRUE(r.ok()) << r.error().what();
     EXPECT_TRUE(r.value().success);
     EXPECT_TRUE(r.value().error_message.empty());
 }
 
-TEST(ProtocolResponseRoundtrip, LoginResponseFailure) {
+TEST(ProtocolResponseRoundtrip, UnlockResponseFailure) {
     using namespace pwdvault::protocol;
-    LoginResponse orig{ false, "wrong password" };
+    UnlockResponse orig{ false, "wrong password" };
     auto bytes = serialize(orig);
-    auto r = deserialize<LoginResponse>(bytes);
+    auto r = deserialize<UnlockResponse>(bytes);
     ASSERT_TRUE(r.ok()) << r.error().what();
     EXPECT_FALSE(r.value().success);
     EXPECT_EQ(r.value().error_message, orig.error_message);
+}
+
+TEST(ProtocolResponseRoundtrip, EnableProgramPasswordResponse) {
+    using namespace pwdvault::protocol;
+    EnableProgramPasswordResponse orig{ true, "" };
+    auto bytes = serialize(orig);
+    auto r = deserialize<EnableProgramPasswordResponse>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_TRUE(r.value().success);
+    EXPECT_TRUE(r.value().error_message.empty());
+}
+
+TEST(ProtocolResponseRoundtrip, EnableProgramPasswordResponseFailure) {
+    using namespace pwdvault::protocol;
+    EnableProgramPasswordResponse orig{ false, "already enabled" };
+    auto bytes = serialize(orig);
+    auto r = deserialize<EnableProgramPasswordResponse>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_FALSE(r.value().success);
+    EXPECT_EQ(r.value().error_message, orig.error_message);
+}
+
+TEST(ProtocolResponseRoundtrip, DisableProgramPasswordResponse) {
+    using namespace pwdvault::protocol;
+    DisableProgramPasswordResponse orig{ true, "" };
+    auto bytes = serialize(orig);
+    auto r = deserialize<DisableProgramPasswordResponse>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_TRUE(r.value().success);
+}
+
+TEST(ProtocolResponseRoundtrip, ChangeProgramPasswordResponse) {
+    using namespace pwdvault::protocol;
+    ChangeProgramPasswordResponse orig{ false, "old password incorrect" };
+    auto bytes = serialize(orig);
+    auto r = deserialize<ChangeProgramPasswordResponse>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_FALSE(r.value().success);
+    EXPECT_EQ(r.value().error_message, orig.error_message);
+}
+
+TEST(ProtocolResponseRoundtrip, GetVaultStatusResponse) {
+    using namespace pwdvault::protocol;
+    {
+        GetVaultStatusResponse orig{ false, false };  // 明文模式，未锁定
+        auto bytes = serialize(orig);
+        auto r = deserialize<GetVaultStatusResponse>(bytes);
+        ASSERT_TRUE(r.ok()) << r.error().what();
+        EXPECT_FALSE(r.value().password_enabled);
+        EXPECT_FALSE(r.value().is_locked);
+    }
+    {
+        GetVaultStatusResponse orig{ true, true };  // 加密模式，已锁定
+        auto bytes = serialize(orig);
+        auto r = deserialize<GetVaultStatusResponse>(bytes);
+        ASSERT_TRUE(r.ok()) << r.error().what();
+        EXPECT_TRUE(r.value().password_enabled);
+        EXPECT_TRUE(r.value().is_locked);
+    }
+    {
+        GetVaultStatusResponse orig{ true, false };  // 加密模式，已解锁
+        auto bytes = serialize(orig);
+        auto r = deserialize<GetVaultStatusResponse>(bytes);
+        ASSERT_TRUE(r.ok()) << r.error().what();
+        EXPECT_TRUE(r.value().password_enabled);
+        EXPECT_FALSE(r.value().is_locked);
+    }
 }
 
 TEST(ProtocolResponseRoundtrip, AddEntryResponse) {
@@ -489,7 +586,7 @@ TEST(ProtocolResponseRoundtrip, EmptyResponses) {
 
 TEST(ProtocolResponseRoundtrip, ErrorResponse) {
     using namespace pwdvault::protocol;
-    ErrorResponse orig{ pwdvault::core::ErrorCode::Unauthorized, "invalid master password" };
+    ErrorResponse orig{ pwdvault::core::ErrorCode::Unauthorized, "invalid program password" };
     auto bytes = serialize(orig);
     auto r = deserialize<ErrorResponse>(bytes);
     ASSERT_TRUE(r.ok()) << r.error().what();
@@ -503,10 +600,10 @@ TEST(ProtocolResponseRoundtrip, ErrorResponse) {
 
 TEST(ProtocolFrame, PackAndParseHeader) {
     using namespace pwdvault::protocol;
-    const LoginRequest req{ "master-pwd", true };
+    const UnlockRequest req{ "program-pwd" };
     auto payload = serialize(req);
     const uint32_t request_id = 0xCAFEBABEu;
-    auto frame = pack_message(CommandId::Login, request_id, payload);
+    auto frame = pack_message(CommandId::Unlock, request_id, payload);
 
     // 帧 = 16 字节 header + payload
     ASSERT_EQ(frame.size(), sizeof(MessageHeader) + payload.size());
@@ -517,16 +614,15 @@ TEST(ProtocolFrame, PackAndParseHeader) {
     EXPECT_EQ(offset, sizeof(MessageHeader));
     EXPECT_EQ(hdr.magic, kMagic);
     EXPECT_EQ(hdr.version, kProtocolVersion);
-    EXPECT_EQ(hdr.command, CommandId::Login);
+    EXPECT_EQ(hdr.command, CommandId::Unlock);
     EXPECT_EQ(hdr.request_id, request_id);
     EXPECT_EQ(hdr.payload_size, payload.size());
 
     // 从 offset 开始取出 payload，应能反序列化回原请求
     pwdvault::core::ByteSpan payload_span(frame.data() + offset, hdr.payload_size);
-    auto r = deserialize<LoginRequest>(payload_span);
+    auto r = deserialize<UnlockRequest>(payload_span);
     ASSERT_TRUE(r.ok()) << r.error().what();
     EXPECT_EQ(r.value().password, req.password);
-    EXPECT_EQ(r.value().is_first_time, req.is_first_time);
 }
 
 TEST(ProtocolFrame, PackMessageWithEmptyPayload) {

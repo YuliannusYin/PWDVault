@@ -72,7 +72,7 @@ core::Error make_crypto_error_ossl(std::string_view prefix) {
 // 算法常量
 constexpr int kIvLen = 12;       // GCM 推荐 IV 长度
 constexpr int kTagLen = 16;      // GCM 认证 tag 长度
-constexpr size_t kKeyLen = 32;   // AES-256 主密钥长度
+constexpr size_t kKeyLen = 32;   // AES-256 加密密钥长度
 
 }  // namespace
 
@@ -80,15 +80,15 @@ constexpr size_t kKeyLen = 32;   // AES-256 主密钥长度
 // 构造与析构
 // ============================================================================
 
-CryptoEngine::CryptoEngine(core::ByteSpan master_key)
-    : master_key_(master_key.begin(), master_key.end()) {
+CryptoEngine::CryptoEngine(core::ByteSpan encryption_key)
+    : encryption_key_(encryption_key.begin(), encryption_key.end()) {
     // libsodium 在首次使用前必须初始化；多次调用幂等且线程安全
     sodium_init();
 }
 
 CryptoEngine::~CryptoEngine() {
-    if (!master_key_.empty()) {
-        sodium_memzero(master_key_.data(), master_key_.size());
+    if (!encryption_key_.empty()) {
+        sodium_memzero(encryption_key_.data(), encryption_key_.size());
     }
 }
 
@@ -98,9 +98,9 @@ CryptoEngine::~CryptoEngine() {
 
 core::Result<core::ByteVec> CryptoEngine::encrypt(core::ByteSpan plaintext,
                                                    core::ByteSpan associated_data) {
-    if (master_key_.size() != kKeyLen) {
+    if (encryption_key_.size() != kKeyLen) {
         return core::Result<core::ByteVec>::Err(
-            make_crypto_error("master key length must be 32 bytes"));
+            make_crypto_error("encryption key length must be 32 bytes"));
     }
 
     // 1. 生成随机 IV
@@ -125,7 +125,7 @@ core::Result<core::ByteVec> CryptoEngine::encrypt(core::ByteSpan plaintext,
     }
 
     if (EVP_EncryptInit_ex(ctx.get(), nullptr, nullptr,
-                          reinterpret_cast<const unsigned char*>(master_key_.data()),
+                          reinterpret_cast<const unsigned char*>(encryption_key_.data()),
                           reinterpret_cast<const unsigned char*>(iv.data())) != 1) {
         return core::Result<core::ByteVec>::Err(
             make_crypto_error_ossl("EVP_EncryptInit_ex (key/iv) failed"));
@@ -195,9 +195,9 @@ core::Result<core::ByteVec> CryptoEngine::encrypt(core::ByteSpan plaintext,
 
 core::Result<std::string> CryptoEngine::decrypt(core::ByteSpan ciphertext,
                                                  core::ByteSpan associated_data) {
-    if (master_key_.size() != kKeyLen) {
+    if (encryption_key_.size() != kKeyLen) {
         return core::Result<std::string>::Err(
-            make_crypto_error("master key length must be 32 bytes"));
+            make_crypto_error("encryption key length must be 32 bytes"));
     }
 
     if (ciphertext.size() < static_cast<size_t>(kIvLen) + static_cast<size_t>(kTagLen)) {
@@ -230,7 +230,7 @@ core::Result<std::string> CryptoEngine::decrypt(core::ByteSpan ciphertext,
     }
 
     if (EVP_DecryptInit_ex(ctx.get(), nullptr, nullptr,
-                          reinterpret_cast<const unsigned char*>(master_key_.data()),
+                          reinterpret_cast<const unsigned char*>(encryption_key_.data()),
                           reinterpret_cast<const unsigned char*>(iv_ptr)) != 1) {
         return core::Result<std::string>::Err(
             make_crypto_error_ossl("EVP_DecryptInit_ex (key/iv) failed"));

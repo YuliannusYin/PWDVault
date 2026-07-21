@@ -190,9 +190,12 @@ std::string_view command_name(CommandId cmd) noexcept {
     switch (cmd) {
         case CommandId::Ping:             return "Ping";
         case CommandId::Shutdown:         return "Shutdown";
-        case CommandId::Login:            return "Login";
         case CommandId::Unlock:           return "Unlock";
         case CommandId::Lock:             return "Lock";
+        case CommandId::EnableProgramPassword:  return "EnableProgramPassword";
+        case CommandId::DisableProgramPassword: return "DisableProgramPassword";
+        case CommandId::ChangeProgramPassword:  return "ChangeProgramPassword";
+        case CommandId::GetVaultStatus:         return "GetVaultStatus";
         case CommandId::AddEntry:         return "AddEntry";
         case CommandId::UpdateEntry:      return "UpdateEntry";
         case CommandId::RemoveEntry:      return "RemoveEntry";
@@ -330,19 +333,6 @@ template <> core::Result<ShutdownRequest> deserialize<ShutdownRequest>(core::Byt
     return core::Result<ShutdownRequest>::Ok(ShutdownRequest{});
 }
 
-template <> core::ByteVec serialize<LoginRequest>(const LoginRequest& v) {
-    Writer w;
-    w.write_string(v.password);
-    w.write_bool(v.is_first_time);
-    return w.take();
-}
-template <> core::Result<LoginRequest> deserialize<LoginRequest>(core::ByteSpan data) {
-    Reader r(data); LoginRequest v;
-    if (!r.read_string(v.password)) return core::Result<LoginRequest>::Err(make_error("deserialize<LoginRequest>: malformed"));
-    if (!r.read_bool(v.is_first_time)) return core::Result<LoginRequest>::Err(make_error("deserialize<LoginRequest>: malformed"));
-    return core::Result<LoginRequest>::Ok(std::move(v));
-}
-
 template <> core::ByteVec serialize<UnlockRequest>(const UnlockRequest& v) {
     Writer w;
     w.write_string(v.password);
@@ -359,6 +349,48 @@ template <> core::ByteVec serialize<LockRequest>(const LockRequest&) {
 }
 template <> core::Result<LockRequest> deserialize<LockRequest>(core::ByteSpan) {
     return core::Result<LockRequest>::Ok(LockRequest{});
+}
+
+template <> core::ByteVec serialize<EnableProgramPasswordRequest>(const EnableProgramPasswordRequest& v) {
+    Writer w;
+    w.write_string(v.password);
+    return w.take();
+}
+template <> core::Result<EnableProgramPasswordRequest> deserialize<EnableProgramPasswordRequest>(core::ByteSpan data) {
+    Reader r(data); EnableProgramPasswordRequest v;
+    if (!r.read_string(v.password)) return core::Result<EnableProgramPasswordRequest>::Err(make_error("deserialize<EnableProgramPasswordRequest>: malformed"));
+    return core::Result<EnableProgramPasswordRequest>::Ok(std::move(v));
+}
+
+template <> core::ByteVec serialize<DisableProgramPasswordRequest>(const DisableProgramPasswordRequest& v) {
+    Writer w;
+    w.write_string(v.password);
+    return w.take();
+}
+template <> core::Result<DisableProgramPasswordRequest> deserialize<DisableProgramPasswordRequest>(core::ByteSpan data) {
+    Reader r(data); DisableProgramPasswordRequest v;
+    if (!r.read_string(v.password)) return core::Result<DisableProgramPasswordRequest>::Err(make_error("deserialize<DisableProgramPasswordRequest>: malformed"));
+    return core::Result<DisableProgramPasswordRequest>::Ok(std::move(v));
+}
+
+template <> core::ByteVec serialize<ChangeProgramPasswordRequest>(const ChangeProgramPasswordRequest& v) {
+    Writer w;
+    w.write_string(v.old_password);
+    w.write_string(v.new_password);
+    return w.take();
+}
+template <> core::Result<ChangeProgramPasswordRequest> deserialize<ChangeProgramPasswordRequest>(core::ByteSpan data) {
+    Reader r(data); ChangeProgramPasswordRequest v;
+    if (!r.read_string(v.old_password)) return core::Result<ChangeProgramPasswordRequest>::Err(make_error("deserialize<ChangeProgramPasswordRequest>: malformed"));
+    if (!r.read_string(v.new_password)) return core::Result<ChangeProgramPasswordRequest>::Err(make_error("deserialize<ChangeProgramPasswordRequest>: malformed"));
+    return core::Result<ChangeProgramPasswordRequest>::Ok(std::move(v));
+}
+
+template <> core::ByteVec serialize<GetVaultStatusRequest>(const GetVaultStatusRequest&) {
+    return {};
+}
+template <> core::Result<GetVaultStatusRequest> deserialize<GetVaultStatusRequest>(core::ByteSpan) {
+    return core::Result<GetVaultStatusRequest>::Ok(GetVaultStatusRequest{});
 }
 
 template <> core::ByteVec serialize<AddEntryRequest>(const AddEntryRequest& v) {
@@ -453,19 +485,6 @@ template <> core::Result<ShutdownResponse> deserialize<ShutdownResponse>(core::B
     return core::Result<ShutdownResponse>::Ok(ShutdownResponse{});
 }
 
-template <> core::ByteVec serialize<LoginResponse>(const LoginResponse& v) {
-    Writer w;
-    w.write_bool(v.success);
-    w.write_string(v.error_message);
-    return w.take();
-}
-template <> core::Result<LoginResponse> deserialize<LoginResponse>(core::ByteSpan data) {
-    Reader r(data); LoginResponse v;
-    if (!r.read_bool(v.success)) return core::Result<LoginResponse>::Err(make_error("deserialize<LoginResponse>: malformed"));
-    if (!r.read_string(v.error_message)) return core::Result<LoginResponse>::Err(make_error("deserialize<LoginResponse>: malformed"));
-    return core::Result<LoginResponse>::Ok(std::move(v));
-}
-
 template <> core::ByteVec serialize<UnlockResponse>(const UnlockResponse& v) {
     Writer w;
     w.write_bool(v.success);
@@ -486,6 +505,58 @@ template <> core::Result<LockResponse> deserialize<LockResponse>(core::ByteSpan 
     // 空响应：data 必须为空。若非空则可能是 ErrorResponse，让调用方回退解析。
     if (!data.empty()) return core::Result<LockResponse>::Err(make_error("deserialize<LockResponse>: expected empty payload"));
     return core::Result<LockResponse>::Ok(LockResponse{});
+}
+
+template <> core::ByteVec serialize<EnableProgramPasswordResponse>(const EnableProgramPasswordResponse& v) {
+    Writer w;
+    w.write_bool(v.success);
+    w.write_string(v.error_message);
+    return w.take();
+}
+template <> core::Result<EnableProgramPasswordResponse> deserialize<EnableProgramPasswordResponse>(core::ByteSpan data) {
+    Reader r(data); EnableProgramPasswordResponse v;
+    if (!r.read_bool(v.success)) return core::Result<EnableProgramPasswordResponse>::Err(make_error("deserialize<EnableProgramPasswordResponse>: malformed"));
+    if (!r.read_string(v.error_message)) return core::Result<EnableProgramPasswordResponse>::Err(make_error("deserialize<EnableProgramPasswordResponse>: malformed"));
+    return core::Result<EnableProgramPasswordResponse>::Ok(std::move(v));
+}
+
+template <> core::ByteVec serialize<DisableProgramPasswordResponse>(const DisableProgramPasswordResponse& v) {
+    Writer w;
+    w.write_bool(v.success);
+    w.write_string(v.error_message);
+    return w.take();
+}
+template <> core::Result<DisableProgramPasswordResponse> deserialize<DisableProgramPasswordResponse>(core::ByteSpan data) {
+    Reader r(data); DisableProgramPasswordResponse v;
+    if (!r.read_bool(v.success)) return core::Result<DisableProgramPasswordResponse>::Err(make_error("deserialize<DisableProgramPasswordResponse>: malformed"));
+    if (!r.read_string(v.error_message)) return core::Result<DisableProgramPasswordResponse>::Err(make_error("deserialize<DisableProgramPasswordResponse>: malformed"));
+    return core::Result<DisableProgramPasswordResponse>::Ok(std::move(v));
+}
+
+template <> core::ByteVec serialize<ChangeProgramPasswordResponse>(const ChangeProgramPasswordResponse& v) {
+    Writer w;
+    w.write_bool(v.success);
+    w.write_string(v.error_message);
+    return w.take();
+}
+template <> core::Result<ChangeProgramPasswordResponse> deserialize<ChangeProgramPasswordResponse>(core::ByteSpan data) {
+    Reader r(data); ChangeProgramPasswordResponse v;
+    if (!r.read_bool(v.success)) return core::Result<ChangeProgramPasswordResponse>::Err(make_error("deserialize<ChangeProgramPasswordResponse>: malformed"));
+    if (!r.read_string(v.error_message)) return core::Result<ChangeProgramPasswordResponse>::Err(make_error("deserialize<ChangeProgramPasswordResponse>: malformed"));
+    return core::Result<ChangeProgramPasswordResponse>::Ok(std::move(v));
+}
+
+template <> core::ByteVec serialize<GetVaultStatusResponse>(const GetVaultStatusResponse& v) {
+    Writer w;
+    w.write_bool(v.password_enabled);
+    w.write_bool(v.is_locked);
+    return w.take();
+}
+template <> core::Result<GetVaultStatusResponse> deserialize<GetVaultStatusResponse>(core::ByteSpan data) {
+    Reader r(data); GetVaultStatusResponse v;
+    if (!r.read_bool(v.password_enabled)) return core::Result<GetVaultStatusResponse>::Err(make_error("deserialize<GetVaultStatusResponse>: malformed"));
+    if (!r.read_bool(v.is_locked)) return core::Result<GetVaultStatusResponse>::Err(make_error("deserialize<GetVaultStatusResponse>: malformed"));
+    return core::Result<GetVaultStatusResponse>::Ok(std::move(v));
 }
 
 template <> core::ByteVec serialize<AddEntryResponse>(const AddEntryResponse& v) {

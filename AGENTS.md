@@ -36,7 +36,7 @@ PwdVault/
 │   │   ├── main.cpp            # 入口（命令行参数、保活循环、Ctrl+C 处理）
 │   │   ├── IpcServer.cpp       # 命名管道服务端
 │   │   ├── ServiceCore.cpp     # 命令分发与业务逻辑
-│   │   └── MasterKeyStore.cpp  # 主密码 KEK 持久化（vault.meta）
+│   │   └── ProgramPasswordStore.cpp  # 程序密码与 encryption_key 持久化（vault.meta）
 │   ├── ui/                     # UI 进程
 │   │   ├── main.cpp            # Qt 入口（拉起 service）
 │   │   ├── MainWindow.cpp      # 主窗口与侧边栏
@@ -129,7 +129,7 @@ cmake --build build --target package_inno
 - **头文件保护**：统一用 `#pragma once`，不用 include guard
 - **错误处理**：使用 `core::Result<T>` 而非异常；接口返回 `Result<T>::Err(...)` 表失败
 - **资源管理**：RAII 优先，OpenSSL/SQLite/Windows HANDLE 用 `std::unique_ptr` + 自定义 deleter
-- **敏感数据**：master_key、KEK、派生密钥在析构时用 `sodium_memzero` 清零；HMAC 比较用 `CRYPTO_memcmp` 或 `sodium_memcmp`
+- **敏感数据**：encryption_key、KEK、派生密钥在析构时用 `sodium_memzero` 清零；HMAC 比较用 `CRYPTO_memcmp` 或 `sodium_memcmp`
 - **隐藏符号**：默认 `CMAKE_CXX_VISIBILITY_PRESET hidden`，仅显式导出
 
 ### CMake 风格
@@ -144,7 +144,7 @@ cmake --build build --target package_inno
 
 - **类型/类**：`PascalCase`（`PasswordEntry`、`CryptoEngine`、`IStorageEngine`）
 - **接口**：以 `I` 前缀（`IStorageEngine`、`ICryptoEngine`）
-- **方法/变量**：`snake_case`（`add_entry`、`master_key_`）
+- **方法/变量**：`snake_case`（`add_entry`、`encryption_key_`）
 - **成员变量**：带尾部下划线（`unlocked_`、`request_id_`）
 - **常量/枚举值**：`PascalCase`（`CommandId::AddEntry`、`ErrorCode::NotFound`）
 - **文件名**：`PascalCase.cpp`/`.h`（与类名一致）
@@ -173,8 +173,8 @@ cmake --build build --target package_inno
 | ---------------------- | ----------------------------------------------------------------- |
 | `main.cpp`             | 命令行参数解析、引擎实例化、IpcServer 启动、保活与超时退出、Ctrl+C 信号处理 |
 | `IpcServer.cpp`        | 命名管道服务端（OVERLAPPED I/O，多客户端并发，30 秒读超时）       |
-| `ServiceCore.cpp`      | 命令分发、entry 加解密、登录失败计数与冷却（5 次失败锁 5 分钟）   |
-| `MasterKeyStore.cpp`   | vault.meta 文件读写（salt + Argon2id 参数 + 加密的 master_key）   |
+| `ServiceCore.cpp`      | 命令分发、entry 加解密、解锁失败计数与冷却（5 次失败锁 5 分钟）、明文/加密模式切换 |
+| `ProgramPasswordStore.cpp` | vault.meta 文件读写（salt + Argon2id 参数 + 加密的 encryption_key）、修改程序密码、禁用程序密码（destroy meta） |
 
 ### UI 进程（`src/ui/`）
 
@@ -183,9 +183,10 @@ Qt 6 Widgets GUI 程序，不持有任何敏感数据，所有操作通过 IPC �
 | 文件                           | 职责                                       |
 | ------------------------------ | ------------------------------------------ |
 | `main.cpp`                     | Qt 入口、首次启动拉起 service、连接重试    |
-| `MainWindow.cpp`               | 主窗口（侧边栏 + QStackedWidget）、首次模式检测、登录/重连流程 |
+| `MainWindow.cpp`               | 主窗口（侧边栏 + QStackedWidget）、GetVaultStatus 启动流程（明文直接进入 / 加密显示解锁）、重连流程 |
 | `IpcClient.cpp`                | 命名管道客户端（同步调用，10 秒超时，4 次重试） |
-| `views/LoginView.cpp`          | 登录视图（首次设置 / 解锁两种模式 + 实时强度提示） |
+| `views/UnlockView.cpp`         | 解锁视图（加密模式下输入程序密码解锁；明文模式下不显示） |
+| `views/ProgramPasswordDialog.cpp` | 程序密码管理对话框（启用 / 禁用 / 修改三种模式） |
 | `views/PasswordBookView.cpp`   | 密码本（列表、搜索、详情、编辑、删除、复制密码） |
 | `views/InputView.cpp`          | 录入视图                                   |
 | `views/GeneratorView.cpp`      | 生成器视图（参数配置 + 强度条）            |

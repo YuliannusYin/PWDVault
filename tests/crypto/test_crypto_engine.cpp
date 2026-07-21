@@ -5,7 +5,7 @@
 // PwdVault 加密引擎 GoogleTest 单元测试。覆盖：
 //   - 加密/解密往返（带与不带 AAD、空明文）
 //   - 篡改密文/Tag 后解密失败（GCM 认证）
-//   - 不同主密钥解密失败
+//   - 不同加密密钥解密失败
 //   - 错误长度的 salt 派生密钥失败
 //   - 相同输入派生相同密钥；不同密码派生不同密钥
 //   - generate_key_and_iv 返回正确长度且随机
@@ -44,9 +44,9 @@ pwdvault::core::ByteVec random_bytes(size_t n) {
 class CryptoEngineTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        master_key_ = random_bytes(kKeyLen);
+        encryption_key_ = random_bytes(kKeyLen);
     }
-    pwdvault::core::ByteVec master_key_;
+    pwdvault::core::ByteVec encryption_key_;
 };
 
 // ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ protected:
 // ---------------------------------------------------------------------------
 
 TEST_F(CryptoEngineTest, EncryptDecryptRoundtripNoAAD) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     const std::string plaintext = "Hello, PwdVault!";
 
     auto enc = engine.encrypt(bytes_from_string(plaintext));
@@ -68,7 +68,7 @@ TEST_F(CryptoEngineTest, EncryptDecryptRoundtripNoAAD) {
 }
 
 TEST_F(CryptoEngineTest, EncryptDecryptRoundtripWithAAD) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     const std::string plaintext = "Secret message with AAD";
     auto aad = bytes_from_string("associated-data-12345");
 
@@ -81,7 +81,7 @@ TEST_F(CryptoEngineTest, EncryptDecryptRoundtripWithAAD) {
 }
 
 TEST_F(CryptoEngineTest, DecryptWithMismatchedAADFails) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     const std::string plaintext = "Secret message";
     auto aad = bytes_from_string("correct-aad");
     auto wrong_aad = bytes_from_string("wrong-aad");
@@ -95,7 +95,7 @@ TEST_F(CryptoEngineTest, DecryptWithMismatchedAADFails) {
 }
 
 TEST_F(CryptoEngineTest, EmptyPlaintextRoundtrip) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     pwdvault::core::ByteVec empty;
 
     auto enc = engine.encrypt(empty);
@@ -109,7 +109,7 @@ TEST_F(CryptoEngineTest, EmptyPlaintextRoundtrip) {
 }
 
 TEST_F(CryptoEngineTest, EncryptProducesDifferentCiphertextsForSamePlaintext) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     const std::string plaintext = "Same plaintext, different IVs";
 
     auto enc1 = engine.encrypt(bytes_from_string(plaintext));
@@ -125,7 +125,7 @@ TEST_F(CryptoEngineTest, EncryptProducesDifferentCiphertextsForSamePlaintext) {
 // ---------------------------------------------------------------------------
 
 TEST_F(CryptoEngineTest, TamperedCiphertextFailsDecryption) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     const std::string plaintext = "Tamper test payload";
 
     auto enc = engine.encrypt(bytes_from_string(plaintext));
@@ -144,7 +144,7 @@ TEST_F(CryptoEngineTest, TamperedCiphertextFailsDecryption) {
 }
 
 TEST_F(CryptoEngineTest, TamperedTagFailsDecryption) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     const std::string plaintext = "Tag tamper test";
 
     auto enc = engine.encrypt(bytes_from_string(plaintext));
@@ -162,15 +162,15 @@ TEST_F(CryptoEngineTest, TamperedTagFailsDecryption) {
 }
 
 TEST_F(CryptoEngineTest, ShortCiphertextFailsDecryption) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     pwdvault::core::ByteVec short_ct(10);  // < IV(12) + tag(16)
     auto dec = engine.decrypt(short_ct);
     ASSERT_FALSE(dec.ok());
     EXPECT_EQ(dec.error().code, pwdvault::core::ErrorCode::CryptoError);
 }
 
-TEST_F(CryptoEngineTest, DecryptWithDifferentMasterKeyFails) {
-    pwdvault::crypto::CryptoEngine engine1(master_key_);
+TEST_F(CryptoEngineTest, DecryptWithDifferentEncryptionKeyFails) {
+    pwdvault::crypto::CryptoEngine engine1(encryption_key_);
     auto other_key = random_bytes(kKeyLen);
     pwdvault::crypto::CryptoEngine engine2(other_key);
 
@@ -188,7 +188,7 @@ TEST_F(CryptoEngineTest, DecryptWithDifferentMasterKeyFails) {
 // ---------------------------------------------------------------------------
 
 TEST_F(CryptoEngineTest, DeriveKeyFailsWithShortSalt) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     pwdvault::core::ByteVec short_salt(8);  // < 16
     auto result = engine.derive_key("password123", short_salt);
     ASSERT_FALSE(result.ok());
@@ -196,7 +196,7 @@ TEST_F(CryptoEngineTest, DeriveKeyFailsWithShortSalt) {
 }
 
 TEST_F(CryptoEngineTest, DeriveKeyProduces32Bytes) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     auto salt = random_bytes(kSaltLen);
     auto result = engine.derive_key("mypassword", salt);
     ASSERT_TRUE(result.ok()) << result.error().what();
@@ -204,7 +204,7 @@ TEST_F(CryptoEngineTest, DeriveKeyProduces32Bytes) {
 }
 
 TEST_F(CryptoEngineTest, DeriveKeyIsDeterministic) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     auto salt = random_bytes(kSaltLen);
     auto r1 = engine.derive_key("mypassword", salt);
     auto r2 = engine.derive_key("mypassword", salt);
@@ -214,7 +214,7 @@ TEST_F(CryptoEngineTest, DeriveKeyIsDeterministic) {
 }
 
 TEST_F(CryptoEngineTest, DeriveKeyDiffersForDifferentPasswords) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     auto salt = random_bytes(kSaltLen);
     auto r1 = engine.derive_key("password-A", salt);
     auto r2 = engine.derive_key("password-B", salt);
@@ -228,7 +228,7 @@ TEST_F(CryptoEngineTest, DeriveKeyDiffersForDifferentPasswords) {
 // ---------------------------------------------------------------------------
 
 TEST_F(CryptoEngineTest, GenerateKeyAndIvReturnsCorrectLengths) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     auto result = engine.generate_key_and_iv();
     ASSERT_TRUE(result.ok()) << result.error().what();
     EXPECT_EQ(result.value().first.size(), kKeyLen);
@@ -236,7 +236,7 @@ TEST_F(CryptoEngineTest, GenerateKeyAndIvReturnsCorrectLengths) {
 }
 
 TEST_F(CryptoEngineTest, GenerateKeyAndIvProducesRandomOutput) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     auto r1 = engine.generate_key_and_iv();
     auto r2 = engine.generate_key_and_iv();
     ASSERT_TRUE(r1.ok());
@@ -251,7 +251,7 @@ TEST_F(CryptoEngineTest, GenerateKeyAndIvProducesRandomOutput) {
 // ---------------------------------------------------------------------------
 
 TEST_F(CryptoEngineTest, VerifyPasswordCorrectReturnsTrue) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     auto salt = random_bytes(kSaltLen);
     auto hash = engine.derive_key("correct-password", salt);
     ASSERT_TRUE(hash.ok());
@@ -260,7 +260,7 @@ TEST_F(CryptoEngineTest, VerifyPasswordCorrectReturnsTrue) {
 }
 
 TEST_F(CryptoEngineTest, VerifyPasswordWrongReturnsFalse) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     auto salt = random_bytes(kSaltLen);
     auto hash = engine.derive_key("correct-password", salt);
     ASSERT_TRUE(hash.ok());
@@ -269,14 +269,14 @@ TEST_F(CryptoEngineTest, VerifyPasswordWrongReturnsFalse) {
 }
 
 TEST_F(CryptoEngineTest, VerifyPasswordWithShortSaltReturnsFalse) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     pwdvault::core::ByteVec short_salt(8);
     pwdvault::core::ByteVec dummy_hash(kKeyLen);
     EXPECT_FALSE(engine.verify_password("any-password", short_salt, dummy_hash));
 }
 
 TEST_F(CryptoEngineTest, VerifyPasswordWithWrongHashLengthReturnsFalse) {
-    pwdvault::crypto::CryptoEngine engine(master_key_);
+    pwdvault::crypto::CryptoEngine engine(encryption_key_);
     auto salt = random_bytes(kSaltLen);
     pwdvault::core::ByteVec bad_hash(16);  // 期望 32 字节
     EXPECT_FALSE(engine.verify_password("any-password", salt, bad_hash));
