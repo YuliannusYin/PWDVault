@@ -1,0 +1,58 @@
+// coding: utf-8
+// =============================================================================
+// GeneratorView.h
+//
+// PwdVault 密码生成器视图。配置字符集与长度 → 调用 generate_password → 显示结果
+// 并实时评估强度。支持复制到剪贴板。
+// =============================================================================
+#pragma once
+
+#include <QWidget>
+
+class QCheckBox;
+class QGroupBox;
+class QLabel;
+class QLineEdit;
+class QProgressBar;
+class QPushButton;
+class QSpinBox;
+
+namespace pwdvault::ui {
+
+class IpcClient;
+
+class GeneratorView : public QWidget {
+    Q_OBJECT
+public:
+    explicit GeneratorView(IpcClient* client, QWidget* parent = nullptr);
+    ~GeneratorView() override;
+
+signals:
+    /// 生成密码后触发，MainWindow 可将其传给 InputView 回填。
+    void password_generated(const QString& password);
+
+private slots:
+    void on_generate_clicked();
+    void on_copy_clicked();
+
+private:
+    void build_ui();
+    void update_strength(const QString& password);
+
+    IpcClient* client_;
+
+    QSpinBox* length_spin_ = nullptr;
+    QCheckBox* upper_check_ = nullptr;
+    QCheckBox* lower_check_ = nullptr;
+    QCheckBox* digits_check_ = nullptr;
+    QCheckBox* symbols_check_ = nullptr;
+    QCheckBox* exclude_ambiguous_check_ = nullptr;
+    QLineEdit* custom_chars_edit_ = nullptr;
+    QPushButton* generate_button_ = nullptr;
+    QLineEdit* result_edit_ = nullptr;
+    QProgressBar* strength_bar_ = nullptr;
+    QLabel* strength_label_ = nullptr;
+    QPushButton* copy_button_ = nullptr;
+};
+
+}  // namespace pwdvault::ui

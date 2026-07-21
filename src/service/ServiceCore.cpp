@@ -1,0 +1,712 @@
+// coding: utf-8
+// =============================================================================
+// ServiceCore.cpp
+//
+// 命令分发与业务逻辑实现。
+//
+// 加密约定：
+//   - entry.password 在内存中为明文 std::string
+//   - 程序密码已启用时：持久化前用 entry_crypto_->encrypt(password) 加密，
+//     得到 [IV || ciphertext || tag]，拆分为 iv(12) / password(密文) / tag(16) 三段
+//   - 程序密码未启用时（明文模式）：password 直接以明文 BLOB 存入 storage，
+//     iv 与 tag 为空 BLOB
+//   - 读取时：若 iv/tag 非空则拼回 [IV || ciphertext || tag] 解密；否则直接返回明文
+//
+// 解锁失败计数：
+//   - 连续 5 次失败后锁定 5 分钟，期间 Unlock 直接返回错误
+//   - 成功解锁后计数清零
+// =============================================================================
+#include "ServiceCore.h"
+
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "CryptoEngine.h"
+#include "ICryptoEngine.h"
+#include "IPasswordGenerator.h"
+#include "IStorageEngine.h"
+#include "ProgramPasswordStore.h"
+#include "Types.h"
+
+#include "Commands.h"
+#include "Messages.h"
+#include "Serializer.h"
+
+#include <sodium.h>
+
+namespace pwdvault::service {
+
+namespace {
+
+constexpr size_t kIvLen = 12;
+constexpr size_t kTagLen = 16;
+constexpr int kMaxLoginAttempts = 5;
+constexpr auto kLockoutDuration = std::chrono::minutes(5);
+
+/// 安全清零 ByteVec。
+void secure_zero(core::ByteVec& v) {
+    if (!v.empty()) {
+        sodium_memzero(v.data(), v.size());
+    }
+}
+
+/// 安全清零 std::string。
+void secure_zero_string(std::string& s) {
+    if (!s.empty()) {
+        sodium_memzero(s.data(), s.size());
+    }
+}
+
+/// 当前 Unix 时间戳（秒）。
+uint64_t now_unix_seconds() {
+    using namespace std::chrono;
+    return static_cast<uint64_t>(
+        duration_cast<seconds>(system_clock::now().time_since_epoch()).count());
+}
+
+}  // namespace
+
+// ============================================================================
+// 构造与析构
+// ============================================================================
+
+ServiceCore::ServiceCore(std::unique_ptr<core::ICryptoEngine> crypto,
+                         std::unique_ptr<core::IStorageEngine> storage,
+                         std::unique_ptr<core::IPasswordGenerator> generator,
+                         std::filesystem::path meta_path)
+    : crypto_(std::move(crypto)),
+      storage_(std::move(storage)),
+      generator_(std::move(generator)),
+      password_store_(std::make_unique<ProgramPasswordStore>(std::move(meta_path))) {
+    // 启动时检测程序密码是否已启用
+    password_enabled_ = password_store_->exists();
+    if (!password_enabled_) {
+        // 明文模式：自动解锁
+        unlocked_ = true;
+    }
+    // 加密模式下 unlocked_ 保持 false，需用户 Unlock 后才解锁
+}
+
+ServiceCore::~ServiceCore() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    clear_encryption_key();
+}
+
+// ============================================================================
+// 内部辅助
+// ============================================================================
+
+void ServiceCore::set_encryption_key(core::ByteVec key) {
+    // 调用方持锁
+    encryption_key_ = std::move(key);
+    entry_crypto_ = std::make_unique<crypto::CryptoEngine>(encryption_key_);
+}
+
+void ServiceCore::clear_encryption_key() {
+    // 调用方持锁
+    entry_crypto_.reset();
+    secure_zero(encryption_key_);
+    encryption_key_.clear();
+}
+
+bool ServiceCore::is_in_cooldown() const {
+    return lock_until_ > std::chrono::steady_clock::now();
+}
+
+core::ByteVec ServiceCore::make_error(core::ErrorCode code, std::string message) const {
+    protocol::ErrorResponse resp;
+    resp.code = code;
+    resp.message = std::move(message);
+    return protocol::serialize(resp);
+}
+
+core::Result<core::PasswordEntry> ServiceCore::encrypt_entry(
+    core::PasswordEntry entry) const {
+    // 明文模式：不做加密，password 保持明文，iv/tag 为空
+    if (!password_enabled_) {
+        entry.iv.clear();
+        entry.tag.clear();
+        return core::Result<core::PasswordEntry>::Ok(std::move(entry));
+    }
+
+    if (!entry_crypto_) {
+        return core::Result<core::PasswordEntry>::Err(
+            core::Error(core::ErrorCode::Unauthorized, "vault is locked"));
+    }
+
+    // 明文 password → ByteSpan
+    core::ByteSpan plaintext(
+        reinterpret_cast<const std::byte*>(entry.password.data()),
+        entry.password.size());
+
+    auto enc_result = entry_crypto_->encrypt(plaintext);
+    if (!enc_result) {
+        return core::Result<core::PasswordEntry>::Err(enc_result.error());
+    }
+
+    const auto& blob = *enc_result;
+    // blob = [IV(12) || ciphertext || tag(16)]
+    if (blob.size() < kIvLen + kTagLen) {
+        return core::Result<core::PasswordEntry>::Err(
+            core::Error(core::ErrorCode::CryptoError, "ciphertext blob too short"));
+    }
+
+    // 拆分
+    entry.iv.assign(blob.begin(), blob.begin() + kIvLen);
+    entry.tag.assign(blob.end() - kTagLen, blob.end());
+    // password 字段存密文部分
+    entry.password.assign(
+        reinterpret_cast<const char*>(blob.data() + kIvLen),
+        blob.size() - kIvLen - kTagLen);
+
+    return core::Result<core::PasswordEntry>::Ok(std::move(entry));
+}
+
+core::Result<core::PasswordEntry> ServiceCore::decrypt_entry(
+    core::PasswordEntry entry) const {
+    // 明文模式：不做解密，password 已是明文
+    if (!password_enabled_) {
+        return core::Result<core::PasswordEntry>::Ok(std::move(entry));
+    }
+
+    if (!entry_crypto_) {
+        return core::Result<core::PasswordEntry>::Err(
+            core::Error(core::ErrorCode::Unauthorized, "vault is locked"));
+    }
+
+    // 重新拼装 [IV || ciphertext || tag]
+    core::ByteVec blob;
+    blob.reserve(entry.iv.size() + entry.password.size() + entry.tag.size());
+    blob.insert(blob.end(), entry.iv.begin(), entry.iv.end());
+    blob.insert(blob.end(),
+                reinterpret_cast<const std::byte*>(entry.password.data()),
+                reinterpret_cast<const std::byte*>(entry.password.data()) +
+                    entry.password.size());
+    blob.insert(blob.end(), entry.tag.begin(), entry.tag.end());
+
+    auto dec_result = entry_crypto_->decrypt(blob);
+    if (!dec_result) {
+        return core::Result<core::PasswordEntry>::Err(dec_result.error());
+    }
+
+    entry.password = std::move(*dec_result);
+    entry.iv.clear();
+    entry.tag.clear();
+    return core::Result<core::PasswordEntry>::Ok(std::move(entry));
+}
+
+// ============================================================================
+// 请求分发
+// ============================================================================
+
+core::ByteVec ServiceCore::handle_request(core::ByteSpan payload,
+                                          const protocol::MessageHeader& req_header) {
+    using protocol::CommandId;
+    switch (req_header.command) {
+        case CommandId::Ping:                    return handle_ping();
+        case CommandId::Unlock:                  return handle_unlock(payload);
+        case CommandId::Lock:                    return handle_lock();
+        case CommandId::EnableProgramPassword:   return handle_enable_program_password(payload);
+        case CommandId::DisableProgramPassword:  return handle_disable_program_password(payload);
+        case CommandId::ChangeProgramPassword:   return handle_change_program_password(payload);
+        case CommandId::GetVaultStatus:          return handle_get_vault_status();
+        case CommandId::AddEntry:                return handle_add_entry(payload);
+        case CommandId::UpdateEntry:             return handle_update_entry(payload);
+        case CommandId::RemoveEntry:             return handle_remove_entry(payload);
+        case CommandId::GetEntry:                return handle_get_entry(payload);
+        case CommandId::SearchEntries:           return handle_search_entries(payload);
+        case CommandId::ListEntries:             return handle_list_entries();
+        case CommandId::GeneratePassword:        return handle_generate_password(payload);
+        case CommandId::EstimateStrength:        return handle_estimate_strength(payload);
+        case CommandId::Shutdown:
+            // Shutdown 由 main.cpp 的 handler lambda 拦截处理，不应到达此处
+            return protocol::serialize(protocol::ShutdownResponse{});
+    }
+    return make_error(core::ErrorCode::InvalidArgument, "unknown command");
+}
+
+// ============================================================================
+// 各 handler
+// ============================================================================
+
+core::ByteVec ServiceCore::handle_ping() {
+    protocol::PingResponse resp;
+    resp.server_timestamp = now_unix_seconds();
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_unlock(core::ByteSpan payload) {
+    auto req_result = protocol::deserialize<protocol::UnlockRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed UnlockRequest: ") +
+                              req_result.error().what());
+    }
+    const auto& req = *req_result;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!password_enabled_) {
+        // 明文模式无需解锁
+        protocol::UnlockResponse resp;
+        resp.success = true;
+        return protocol::serialize(resp);
+    }
+
+    if (is_in_cooldown()) {
+        protocol::UnlockResponse resp;
+        resp.success = false;
+        resp.error_message = "too many failed attempts, please wait";
+        return protocol::serialize(resp);
+    }
+
+    auto unlock_result = password_store_->unlock(req.password, *crypto_);
+    if (!unlock_result) {
+        ++login_attempts_;
+        if (login_attempts_ >= kMaxLoginAttempts) {
+            lock_until_ = std::chrono::steady_clock::now() + kLockoutDuration;
+        }
+        protocol::UnlockResponse resp;
+        resp.success = false;
+        resp.error_message = unlock_result.error().what();
+        return protocol::serialize(resp);
+    }
+
+    set_encryption_key(std::move(*unlock_result));
+    unlocked_ = true;
+    login_attempts_ = 0;
+
+    protocol::UnlockResponse resp;
+    resp.success = true;
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_lock() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!password_enabled_) {
+        // 明文模式不支持锁定
+        return make_error(core::ErrorCode::InvalidArgument,
+                          "lock is not available when program password is disabled");
+    }
+    clear_encryption_key();
+    unlocked_ = false;
+    return protocol::serialize(protocol::LockResponse{});
+}
+
+core::ByteVec ServiceCore::handle_enable_program_password(core::ByteSpan payload) {
+    auto req_result = protocol::deserialize<protocol::EnableProgramPasswordRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed EnableProgramPasswordRequest: ") +
+                              req_result.error().what());
+    }
+    const auto& req = *req_result;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (password_enabled_) {
+        protocol::EnableProgramPasswordResponse resp;
+        resp.success = false;
+        resp.error_message = "program password is already enabled";
+        return protocol::serialize(resp);
+    }
+
+    // 1. 初始化 vault.meta，获取新的 encryption_key
+    auto init_result = password_store_->initialize(req.password, *crypto_);
+    if (!init_result) {
+        protocol::EnableProgramPasswordResponse resp;
+        resp.success = false;
+        resp.error_message = init_result.error().what();
+        return protocol::serialize(resp);
+    }
+
+    // 2. 设置 encryption_key 并切换到加密模式
+    set_encryption_key(std::move(*init_result));
+    password_enabled_ = true;
+    unlocked_ = true;
+    login_attempts_ = 0;
+
+    // 3. 重新加密所有现有明文条目
+    auto list_result = storage_->list_entries();
+    if (!list_result) {
+        // 列表失败，回滚：清除密钥但保留 vault.meta
+        clear_encryption_key();
+        password_enabled_ = false;
+        unlocked_ = true;
+        password_store_->destroy();
+        protocol::EnableProgramPasswordResponse resp;
+        resp.success = false;
+        resp.error_message = std::string("failed to list entries for re-encryption: ") +
+                             list_result.error().what();
+        return protocol::serialize(resp);
+    }
+
+    // 逐条加密并更新
+    for (auto& entry : *list_result) {
+        // entry 来自明文存储，password 为明文，iv/tag 为空
+        auto enc_result = encrypt_entry(std::move(entry));
+        if (!enc_result) {
+            // 加密失败：回滚（尽力而为）
+            clear_encryption_key();
+            password_enabled_ = false;
+            unlocked_ = true;
+            password_store_->destroy();
+            protocol::EnableProgramPasswordResponse resp;
+            resp.success = false;
+            resp.error_message = std::string("failed to encrypt entry: ") +
+                                 enc_result.error().what();
+            return protocol::serialize(resp);
+        }
+        auto upd_result = storage_->update_entry(*enc_result);
+        if (!upd_result) {
+            clear_encryption_key();
+            password_enabled_ = false;
+            unlocked_ = true;
+            password_store_->destroy();
+            protocol::EnableProgramPasswordResponse resp;
+            resp.success = false;
+            resp.error_message = std::string("failed to update encrypted entry: ") +
+                                 upd_result.error().what();
+            return protocol::serialize(resp);
+        }
+    }
+
+    protocol::EnableProgramPasswordResponse resp;
+    resp.success = true;
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_disable_program_password(core::ByteSpan payload) {
+    auto req_result = protocol::deserialize<protocol::DisableProgramPasswordRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed DisableProgramPasswordRequest: ") +
+                              req_result.error().what());
+    }
+    const auto& req = *req_result;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!password_enabled_) {
+        protocol::DisableProgramPasswordResponse resp;
+        resp.success = false;
+        resp.error_message = "program password is not enabled";
+        return protocol::serialize(resp);
+    }
+
+    // 1. 验证程序密码并获取 encryption_key
+    if (!unlocked_ || !entry_crypto_) {
+        // 需要先解锁
+        if (is_in_cooldown()) {
+            protocol::DisableProgramPasswordResponse resp;
+            resp.success = false;
+            resp.error_message = "too many failed attempts, please wait";
+            return protocol::serialize(resp);
+        }
+        auto unlock_result = password_store_->unlock(req.password, *crypto_);
+        if (!unlock_result) {
+            ++login_attempts_;
+            if (login_attempts_ >= kMaxLoginAttempts) {
+                lock_until_ = std::chrono::steady_clock::now() + kLockoutDuration;
+            }
+            protocol::DisableProgramPasswordResponse resp;
+            resp.success = false;
+            resp.error_message = unlock_result.error().what();
+            return protocol::serialize(resp);
+        }
+        set_encryption_key(std::move(*unlock_result));
+        unlocked_ = true;
+        login_attempts_ = 0;
+    }
+
+    // 2. 解密所有条目转回明文
+    auto list_result = storage_->list_entries();
+    if (!list_result) {
+        protocol::DisableProgramPasswordResponse resp;
+        resp.success = false;
+        resp.error_message = std::string("failed to list entries: ") +
+                             list_result.error().what();
+        return protocol::serialize(resp);
+    }
+
+    for (auto& entry : *list_result) {
+        auto dec_result = decrypt_entry(std::move(entry));
+        if (!dec_result) {
+            protocol::DisableProgramPasswordResponse resp;
+            resp.success = false;
+            resp.error_message = std::string("failed to decrypt entry: ") +
+                                 dec_result.error().what();
+            return protocol::serialize(resp);
+        }
+        auto upd_result = storage_->update_entry(*dec_result);
+        if (!upd_result) {
+            protocol::DisableProgramPasswordResponse resp;
+            resp.success = false;
+            resp.error_message = std::string("failed to update plaintext entry: ") +
+                                 upd_result.error().what();
+            return protocol::serialize(resp);
+        }
+    }
+
+    // 3. 删除 vault.meta
+    auto destroy_err = password_store_->destroy();
+    if (!destroy_err.ok()) {
+        protocol::DisableProgramPasswordResponse resp;
+        resp.success = false;
+        resp.error_message = std::string("failed to delete meta: ") +
+                             destroy_err.what();
+        return protocol::serialize(resp);
+    }
+
+    // 4. 清除内存中的加密密钥，切换到明文模式
+    clear_encryption_key();
+    password_enabled_ = false;
+    unlocked_ = true;
+    login_attempts_ = 0;
+
+    protocol::DisableProgramPasswordResponse resp;
+    resp.success = true;
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_change_program_password(core::ByteSpan payload) {
+    auto req_result = protocol::deserialize<protocol::ChangeProgramPasswordRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed ChangeProgramPasswordRequest: ") +
+                              req_result.error().what());
+    }
+    const auto& req = *req_result;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!password_enabled_) {
+        protocol::ChangeProgramPasswordResponse resp;
+        resp.success = false;
+        resp.error_message = "program password is not enabled";
+        return protocol::serialize(resp);
+    }
+
+    // 直接调用 ProgramPasswordStore::change_password（它内部验证旧密码）
+    auto err = password_store_->change_password(req.old_password, req.new_password, *crypto_);
+    if (!err.ok()) {
+        protocol::ChangeProgramPasswordResponse resp;
+        resp.success = false;
+        resp.error_message = err.what();
+        return protocol::serialize(resp);
+    }
+
+    protocol::ChangeProgramPasswordResponse resp;
+    resp.success = true;
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_get_vault_status() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    protocol::GetVaultStatusResponse resp;
+    resp.password_enabled = password_enabled_;
+    resp.is_locked = password_enabled_ && !unlocked_;
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_add_entry(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::AddEntryRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed AddEntryRequest: ") +
+                              req_result.error().what());
+    }
+
+    // 保存明文副本用于响应
+    core::PasswordEntry plain_entry = req_result->entry;
+
+    // 加密 password 字段（明文模式下为 no-op）
+    auto enc_result = encrypt_entry(req_result->entry);
+    if (!enc_result) {
+        return make_error(enc_result.error().code, enc_result.error().what());
+    }
+
+    auto add_result = storage_->add_entry(*enc_result);
+    if (!add_result) {
+        return make_error(add_result.error().code, add_result.error().what());
+    }
+
+    // 响应中返回明文条目（带分配的 id 与时间戳）
+    plain_entry.id = add_result->id;
+    plain_entry.created_at = add_result->created_at;
+    plain_entry.updated_at = add_result->updated_at;
+
+    protocol::AddEntryResponse resp;
+    resp.entry = std::move(plain_entry);
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_update_entry(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::UpdateEntryRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed UpdateEntryRequest: ") +
+                              req_result.error().what());
+    }
+
+    core::PasswordEntry plain_entry = req_result->entry;
+
+    auto enc_result = encrypt_entry(req_result->entry);
+    if (!enc_result) {
+        return make_error(enc_result.error().code, enc_result.error().what());
+    }
+
+    auto upd_result = storage_->update_entry(*enc_result);
+    if (!upd_result) {
+        return make_error(upd_result.error().code, upd_result.error().what());
+    }
+
+    plain_entry.updated_at = upd_result->updated_at;
+
+    protocol::UpdateEntryResponse resp;
+    resp.entry = std::move(plain_entry);
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_remove_entry(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::RemoveEntryRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed RemoveEntryRequest: ") +
+                              req_result.error().what());
+    }
+    core::Error err = storage_->remove_entry(req_result->id);
+    if (!err.ok()) {
+        return make_error(err.code, err.what());
+    }
+    return protocol::serialize(protocol::RemoveEntryResponse{});
+}
+
+core::ByteVec ServiceCore::handle_get_entry(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::GetEntryRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed GetEntryRequest: ") +
+                              req_result.error().what());
+    }
+    auto get_result = storage_->get_entry(req_result->id);
+    if (!get_result) {
+        return make_error(get_result.error().code, get_result.error().what());
+    }
+    auto dec_result = decrypt_entry(std::move(*get_result));
+    if (!dec_result) {
+        return make_error(dec_result.error().code, dec_result.error().what());
+    }
+    protocol::GetEntryResponse resp;
+    resp.entry = std::move(*dec_result);
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_search_entries(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::SearchEntriesRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed SearchEntriesRequest: ") +
+                              req_result.error().what());
+    }
+    auto search_result = storage_->search_entries(req_result->query);
+    if (!search_result) {
+        return make_error(search_result.error().code, search_result.error().what());
+    }
+    protocol::SearchEntriesResponse resp;
+    resp.entries.reserve(search_result->size());
+    for (auto& e : *search_result) {
+        auto dec_result = decrypt_entry(std::move(e));
+        if (!dec_result) {
+            return make_error(dec_result.error().code, dec_result.error().what());
+        }
+        resp.entries.push_back(std::move(*dec_result));
+    }
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_list_entries() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto list_result = storage_->list_entries();
+    if (!list_result) {
+        return make_error(list_result.error().code, list_result.error().what());
+    }
+    protocol::ListEntriesResponse resp;
+    resp.entries.reserve(list_result->size());
+    for (auto& e : *list_result) {
+        auto dec_result = decrypt_entry(std::move(e));
+        if (!dec_result) {
+            return make_error(dec_result.error().code, dec_result.error().what());
+        }
+        resp.entries.push_back(std::move(*dec_result));
+    }
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_generate_password(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::GeneratePasswordRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed GeneratePasswordRequest: ") +
+                              req_result.error().what());
+    }
+    auto gen_result = generator_->generate(req_result->options);
+    if (!gen_result) {
+        return make_error(gen_result.error().code, gen_result.error().what());
+    }
+    protocol::GeneratePasswordResponse resp;
+    resp.password = std::move(*gen_result);
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_estimate_strength(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::EstimateStrengthRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed EstimateStrengthRequest: ") +
+                              req_result.error().what());
+    }
+    protocol::EstimateStrengthResponse resp;
+    resp.strength_bits = generator_->estimate_strength(req_result->password);
+    // 请求中的密码不再需要，清零（反序列化的 string 在 req_result 析构时释放，但不清零）
+    secure_zero_string(req_result->password);
+    return protocol::serialize(resp);
+}
+
+}  // namespace pwdvault::service
