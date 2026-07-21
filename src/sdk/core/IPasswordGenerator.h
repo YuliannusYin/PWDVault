@@ -1,0 +1,38 @@
+// coding: utf-8
+// =============================================================================
+// IPasswordGenerator.h
+//
+// 密码生成器抽象接口。UI 与服务进程均可通过此接口生成密码并估算强度。
+// =============================================================================
+#pragma once
+
+#include <string>
+
+#include "Error.h"
+#include "Result.h"
+#include "Types.h"
+
+namespace pwdvault::core {
+
+/// 密码生成器抽象接口。
+class IPasswordGenerator {
+public:
+    /// 析构函数为纯虚：本类是纯接口，无默认实现。
+    /// 子类必须提供具体析构定义。
+    virtual ~IPasswordGenerator() = 0;
+
+    /// 根据选项生成密码。
+    /// \param options 生成选项（长度、字符集等）
+    /// \return 成功时返回生成的密码字符串
+    virtual Result<std::string> generate(const PasswordGeneratorOptions& options) = 0;
+
+    /// 估算密码强度。
+    /// \param password 待评估的密码
+    /// \return 估算熵值（单位 bits）；越大约安全
+    virtual int estimate_strength(const std::string& password) = 0;
+};
+
+// 纯虚析构函数的定义：链接时需要（C++ 标准要求纯虚析构函数有定义）。
+inline IPasswordGenerator::~IPasswordGenerator() = default;
+
+}  // namespace pwdvault::core
