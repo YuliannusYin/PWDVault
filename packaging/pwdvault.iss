@@ -46,6 +46,11 @@ UninstallDisplayIcon={app}\bin\{#MyAppExeName}
 Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[CustomMessages]
+; {cm:LaunchApp} 用于 [Run] 段 postinstall 复选框文本，%1 替换为应用名。
+; Inno Setup 不内置此消息，需在此显式定义，否则 iscc 报错。
+LaunchApp=运行 %1
+
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
