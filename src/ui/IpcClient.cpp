@@ -366,4 +366,37 @@ core::Result<protocol::EstimateStrengthResponse> IpcClient::estimate_strength(co
         protocol::CommandId::EstimateStrength, req);
 }
 
+// ---------------------------------------------------------------------------
+// 生成器历史记录
+// ---------------------------------------------------------------------------
+
+core::Result<protocol::ListGeneratedRecordsResponse> IpcClient::list_generated_records() {
+    return send_request<protocol::ListGeneratedRecordsRequest, protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords, protocol::ListGeneratedRecordsRequest{});
+}
+
+core::Result<protocol::RemoveGeneratedRecordResponse> IpcClient::remove_generated_record(int64_t id) {
+    protocol::RemoveGeneratedRecordRequest req;
+    req.id = id;
+    return send_request<protocol::RemoveGeneratedRecordRequest, protocol::RemoveGeneratedRecordResponse>(
+        protocol::CommandId::RemoveGeneratedRecord, req);
+}
+
+core::Result<protocol::ClearGeneratedRecordsResponse> IpcClient::clear_generated_records() {
+    return send_request<protocol::ClearGeneratedRecordsRequest, protocol::ClearGeneratedRecordsResponse>(
+        protocol::CommandId::ClearGeneratedRecords, protocol::ClearGeneratedRecordsRequest{});
+}
+
+core::Result<protocol::GetGeneratorSettingsResponse> IpcClient::get_generator_settings() {
+    return send_request<protocol::GetGeneratorSettingsRequest, protocol::GetGeneratorSettingsResponse>(
+        protocol::CommandId::GetGeneratorSettings, protocol::GetGeneratorSettingsRequest{});
+}
+
+core::Result<protocol::SetGeneratorLimitResponse> IpcClient::set_generator_limit(int32_t limit) {
+    protocol::SetGeneratorLimitRequest req;
+    req.limit = limit;
+    return send_request<protocol::SetGeneratorLimitRequest, protocol::SetGeneratorLimitResponse>(
+        protocol::CommandId::SetGeneratorLimit, req);
+}
+
 }  // namespace pwdvault::ui

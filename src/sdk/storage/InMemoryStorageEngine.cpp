@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 namespace pwdvault::storage {
 
@@ -175,7 +176,13 @@ core::Error InMemoryStorageEngine::begin_transaction() {
         return core::Error(core::ErrorCode::StorageError,
                            "begin_transaction: nested transaction not supported");
     }
-    txn_snapshot_ = Snapshot{entries_, next_id_};
+    Snapshot s;
+    s.entries = entries_;
+    s.next_id = next_id_;
+    s.gen_records = gen_records_;
+    s.gen_next_id = gen_next_id_;
+    s.settings = settings_;
+    txn_snapshot_ = std::move(s);
     return core::Error{};
 }
 
@@ -197,7 +204,120 @@ core::Error InMemoryStorageEngine::rollback_transaction() {
     }
     entries_ = std::move(txn_snapshot_->entries);
     next_id_ = txn_snapshot_->next_id;
+    gen_records_ = std::move(txn_snapshot_->gen_records);
+    gen_next_id_ = txn_snapshot_->gen_next_id;
+    settings_ = std::move(txn_snapshot_->settings);
     txn_snapshot_.reset();
+    return core::Error{};
+}
+
+// =============================================================================
+// 生成器历史记录
+// =============================================================================
+
+std::vector<core::GeneratedPasswordRecord>::iterator
+InMemoryStorageEngine::find_gen_by_id(int64_t id) {
+    return std::find_if(gen_records_.begin(), gen_records_.end(),
+                        [id](const core::GeneratedPasswordRecord& r) { return r.id == id; });
+}
+
+core::Result<core::GeneratedPasswordRecord> InMemoryStorageEngine::add_generated_record(
+    const core::GeneratedPasswordRecord& record) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    core::GeneratedPasswordRecord out = record;
+    out.id = gen_next_id_++;
+    out.created_at = now_seconds();
+    gen_records_.push_back(out);
+    return core::Result<core::GeneratedPasswordRecord>::Ok(std::move(out));
+}
+
+core::Result<core::GeneratedPasswordRecord> InMemoryStorageEngine::update_generated_record(
+    const core::GeneratedPasswordRecord& record) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (record.id == 0) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            core::Error(core::ErrorCode::InvalidArgument,
+                        "update_generated_record: id must not be 0"));
+    }
+    auto it = find_gen_by_id(record.id);
+    if (it == gen_records_.end()) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            core::Error(core::ErrorCode::NotFound,
+                        "update_generated_record: id not found"));
+    }
+    // 保留原始 created_at，仅更新 password/length/iv/tag
+    core::GeneratedPasswordRecord out = record;
+    out.created_at = it->created_at;
+    *it = out;
+    return core::Result<core::GeneratedPasswordRecord>::Ok(std::move(out));
+}
+
+core::Result<std::vector<core::GeneratedPasswordRecord>>
+InMemoryStorageEngine::list_generated_records() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<core::GeneratedPasswordRecord> results = gen_records_;
+    std::sort(results.begin(), results.end(),
+              [](const core::GeneratedPasswordRecord& a,
+                 const core::GeneratedPasswordRecord& b) {
+                  if (a.created_at != b.created_at) return a.created_at > b.created_at;
+                  return a.id > b.id;
+              });
+    return core::Result<std::vector<core::GeneratedPasswordRecord>>::Ok(std::move(results));
+}
+
+core::Error InMemoryStorageEngine::remove_generated_record(int64_t id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = find_gen_by_id(id);
+    if (it == gen_records_.end()) {
+        return core::Error(core::ErrorCode::NotFound,
+                           "remove_generated_record: id not found");
+    }
+    gen_records_.erase(it);
+    return core::Error{};
+}
+
+core::Error InMemoryStorageEngine::clear_generated_records() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    gen_records_.clear();
+    return core::Error{};
+}
+
+// =============================================================================
+// 通用 KV 设置
+// =============================================================================
+
+std::vector<std::pair<std::string, std::string>>::iterator
+InMemoryStorageEngine::find_setting(const std::string& key) {
+    return std::find_if(settings_.begin(), settings_.end(),
+                        [&key](const std::pair<std::string, std::string>& kv) {
+                            return kv.first == key;
+                        });
+}
+
+core::Result<std::string> InMemoryStorageEngine::get_setting(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = find_setting(key);
+    if (it == settings_.end()) {
+        return core::Result<std::string>::Ok(std::string{});
+    }
+    return core::Result<std::string>::Ok(it->second);
+}
+
+core::Error InMemoryStorageEngine::set_setting(const std::string& key,
+                                                const std::string& value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = find_setting(key);
+    if (value.empty()) {
+        if (it != settings_.end()) {
+            settings_.erase(it);
+        }
+        return core::Error{};
+    }
+    if (it == settings_.end()) {
+        settings_.emplace_back(key, value);
+    } else {
+        it->second = value;
+    }
     return core::Error{};
 }
 

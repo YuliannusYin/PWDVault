@@ -62,4 +62,57 @@ struct PasswordGeneratorOptions {
     bool exclude_ambiguous = false;  ///< 排除易混字符（il1Lo0O 等）
 };
 
+/// 密码强度等级。
+///
+/// 阈值依据（估算熵 bit）：
+///   - VeryWeak   < 28      6 位小写 ≈ 28 bit，属常见弱口令级别
+///   - Weak       28 ~ 50   短长度或单一字符集
+///   - Medium     50 ~ 70   中等长度 + 多字符集
+///   - Strong     70 ~ 100  长密码 + 多字符集
+///   - VeryStrong  >= 100   长密码 + 全字符集
+enum class StrengthLevel : uint8_t {
+    VeryWeak   = 0,
+    Weak       = 1,
+    Medium     = 2,
+    Strong     = 3,
+    VeryStrong = 4,
+};
+
+/// 密码强度评估结果。
+///
+/// \note `score` 与 `level` 一一对应（0..4），便于 UI 直接渲染进度条段数。
+///       `warnings` 携带人类可读的中文问题描述，UI 可选择展示。
+struct StrengthEstimate {
+    int bits = 0;                          ///< 估算熵（bit 数），模式惩罚后的最终值
+    StrengthLevel level = StrengthLevel::VeryWeak;  ///< 等级
+    int score = 0;                         ///< 0..4，与 level 数值对应
+    std::vector<std::string> warnings;     ///< 检测到的弱模式描述
+
+    /// 按 bits 计算 level（不重新评估模式）。
+    static StrengthLevel level_from_bits(int bits) {
+        if (bits < 28)  return StrengthLevel::VeryWeak;
+        if (bits < 50)  return StrengthLevel::Weak;
+        if (bits < 70)  return StrengthLevel::Medium;
+        if (bits < 100) return StrengthLevel::Strong;
+        return StrengthLevel::VeryStrong;
+    }
+};
+
+/// 生成器密码生成记录。
+///
+/// 与 PasswordEntry 类似：内存中 `password` 为明文，持久化时由 ICryptoEngine
+/// 加密并填充 `iv`/`tag`。明文模式（未启用程序密码）下三者均为空、明文存储。
+/// `id == 0` 表示尚未入库的新记录。
+struct GeneratedPasswordRecord {
+    int64_t id = 0;            ///< 主键，0 表示尚未分配的新记录
+    std::string password;      ///< 内存中为明文，持久化时为密文 BLOB
+    int32_t length = 0;        ///< 生成时的密码长度（便于列表展示）
+    int64_t created_at = 0;    ///< 生成时间（Unix 时间戳，秒）
+    ByteVec iv;                ///< AES-256-GCM 的 IV，明文模式下为空
+    ByteVec tag;               ///< AES-256-GCM 的 tag，明文模式下为空
+};
+
+/// 生成器历史记录上限设置的特殊值：0 表示无限制。
+inline constexpr int32_t kGeneratorLimitUnlimited = 0;
+
 }  // namespace pwdvault::core

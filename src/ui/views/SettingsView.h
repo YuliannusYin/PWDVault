@@ -57,6 +57,8 @@ private slots:
     void on_open_github_clicked();
     void on_lock_now_clicked();
     void on_theme_segment_clicked(int idx);
+    void on_view_generator_history_clicked();
+    void on_generator_limit_changed(int index);
 
 private:
     void build_ui();
@@ -88,6 +90,9 @@ private:
     /// 刷新条目数量显示
     void refresh_entry_count();
 
+    /// 拉取生成器设置，刷新「记录数」描述与上限下拉选中项
+    void refresh_generator_settings();
+
     IpcClient* client_;
 
     // 安全区
@@ -95,6 +100,12 @@ private:
     QLabel* pp_desc_ = nullptr;           // 副标题
     QPushButton* manage_pp_btn_ = nullptr;
     QComboBox* autolock_combo_ = nullptr;
+
+    // 生成器区
+    QLabel* gen_history_desc_ = nullptr;     // 历史记录行描述（"已保存 N 条记录"）
+    QPushButton* view_history_btn_ = nullptr;
+    QComboBox* gen_limit_combo_ = nullptr;
+    bool gen_limit_syncing_ = false;          // 防止 sync 时触发 on_generator_limit_changed
 
     // 外观区
     QButtonGroup* theme_group_ = nullptr;

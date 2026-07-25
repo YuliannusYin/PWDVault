@@ -45,20 +45,43 @@ public:
     core::Error commit_transaction() override;
     core::Error rollback_transaction() override;
 
+    core::Result<core::GeneratedPasswordRecord> add_generated_record(
+        const core::GeneratedPasswordRecord& record) override;
+    core::Result<core::GeneratedPasswordRecord> update_generated_record(
+        const core::GeneratedPasswordRecord& record) override;
+    core::Result<std::vector<core::GeneratedPasswordRecord>> list_generated_records() override;
+    core::Error remove_generated_record(int64_t id) override;
+    core::Error clear_generated_records() override;
+    core::Result<std::string> get_setting(const std::string& key) override;
+    core::Error set_setting(const std::string& key, const std::string& value) override;
+
 private:
     /// 事务开启时保存的状态快照。
     struct Snapshot {
         std::vector<core::PasswordEntry> entries;
         int64_t next_id = 1;
+        std::vector<core::GeneratedPasswordRecord> gen_records;
+        int64_t gen_next_id = 1;
+        std::vector<std::pair<std::string, std::string>> settings;
     };
 
     std::vector<core::PasswordEntry> entries_;
     int64_t next_id_ = 1;
+    std::vector<core::GeneratedPasswordRecord> gen_records_;
+    int64_t gen_next_id_ = 1;
+    std::vector<std::pair<std::string, std::string>> settings_;
     std::optional<Snapshot> txn_snapshot_;
     std::mutex mutex_;
 
     /// 在 entries_ 中线性查找指定 id 的迭代器。
     std::vector<core::PasswordEntry>::iterator find_by_id(int64_t id);
+
+    /// 在 gen_records_ 中线性查找指定 id 的迭代器。
+    std::vector<core::GeneratedPasswordRecord>::iterator find_gen_by_id(int64_t id);
+
+    /// 在 settings_ 中线性查找指定 key 的迭代器。
+    std::vector<std::pair<std::string, std::string>>::iterator find_setting(
+        const std::string& key);
 
     /// 当前 Unix 时间戳（秒）。
     static int64_t now_seconds();

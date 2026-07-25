@@ -8,6 +8,7 @@
 #include "EditEntryDialog.h"
 #include "IpcClient.h"
 #include "IconKit.h"
+#include "StrengthUtil.h"
 
 #include <QCloseEvent>
 #include <QDateTime>
@@ -36,17 +37,7 @@ QString format_time(int64_t ts) {
         .toString(QStringLiteral("yyyy-MM-dd HH:mm"));
 }
 
-QString strength_color(int bits) {
-    if (bits < 40) return QStringLiteral("#f56363");
-    if (bits < 80) return QStringLiteral("#f0a93c");
-    return QStringLiteral("#2bd576");
-}
-
-QString strength_text(int bits) {
-    if (bits < 40) return QStringLiteral("弱");
-    if (bits < 80) return QStringLiteral("中");
-    return QStringLiteral("强");
-}
+// 强度等级判定与文案统一通过 StrengthUtil 提供（按 core::StrengthLevel 输入）。
 
 }  // namespace
 
@@ -424,24 +415,17 @@ void EditEntryDialog::update_strength(const QString& password) {
         return;
     }
     auto r = client_->estimate_strength(password.toStdString());
-    int bits = 0;
+    core::StrengthEstimate estimate;
     if (r.ok()) {
-        bits = r.value().strength_bits;
+        estimate = r.value().estimate;
     }
     // 通过 cssClass 让 QSS 接管颜色（深浅主题适配）
-    QString label_class;
-    if (bits < 40) {
-        label_class = QStringLiteral("error");
-    } else if (bits < 80) {
-        label_class = QStringLiteral("warning");
-    } else {
-        label_class = QStringLiteral("success");
-    }
+    const QString label_class = strength_label_class(estimate.level);
     strength_label_->setProperty("cssClass", label_class);
     strength_label_->style()->unpolish(strength_label_);
     strength_label_->style()->polish(strength_label_);
     strength_label_->setText(
-        QStringLiteral("强度：%1（%2 bit）").arg(strength_text(bits)).arg(bits));
+        QStringLiteral("强度：%1（%2 bit）").arg(strength_text(estimate.level)).arg(estimate.bits));
 }
 
 void EditEntryDialog::set_error(const QString& message) {

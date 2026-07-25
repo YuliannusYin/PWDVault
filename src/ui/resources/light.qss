@@ -287,6 +287,13 @@ QLabel[cssClass="success"] {
 QLabel[cssClass="warning"] {
     color: #c9820a;
 }
+QLabel[cssClass="info"] {
+    color: #2f5fff;
+}
+QLabel[cssClass="veryStrong"] {
+    color: #0f7a3d;
+    font-weight: 600;
+}
 
 /* 状态徽章 */
 QLabel[cssClass="badge"] {
@@ -316,6 +323,21 @@ QLabel[cssClass="badgeDanger"] {
     border-radius: 10px;
     padding: 2px 10px;
     font-size: 11px;
+}
+QLabel[cssClass="badgeInfo"] {
+    background-color: rgba(47, 95, 255, 0.10);
+    color: #2f5fff;
+    border-radius: 10px;
+    padding: 2px 10px;
+    font-size: 11px;
+}
+QLabel[cssClass="badgeVeryStrong"] {
+    background-color: rgba(15, 122, 61, 0.14);
+    color: #0f7a3d;
+    border-radius: 10px;
+    padding: 2px 10px;
+    font-size: 11px;
+    font-weight: 600;
 }
 
 /* 头像（首字母圆形） */
@@ -593,10 +615,13 @@ QLabel[cssClass="brand"] {
     font-weight: 600;
 }
 
-/* 强度条状态颜色（通过 dynamic property 控制） */
-QProgressBar[strength="weak"]::chunk   { background-color: #dc2626; }
-QProgressBar[strength="medium"]::chunk { background-color: #c9820a; }
-QProgressBar[strength="strong"]::chunk { background-color: #1f9d57; }
+/* 强度条状态颜色（通过 dynamic property 控制）
+   5 级：veryweak/weak/medium/strong/verystrong */
+QProgressBar[strength="veryweak"]::chunk   { background-color: #b91c1c; }
+QProgressBar[strength="weak"]::chunk       { background-color: #dc2626; }
+QProgressBar[strength="medium"]::chunk     { background-color: #c9820a; }
+QProgressBar[strength="strong"]::chunk     { background-color: #1f9d57; }
+QProgressBar[strength="verystrong"]::chunk { background-color: #0f7a3d; }
 
 /* =============================================================================
    扩展样式类（GitHub 风格 UI 重构）
@@ -719,6 +744,23 @@ QWidget#settingsView QPushButton[cssClass="segmentedItem"] {
     padding: 0 14px;
 }
 
+/* 设置页 outline 按钮 + 下拉框底色统一为 #EDF1F7（与 inputField 一致）。
+   hover/pressed 用预计算纯色模拟原 "alpha 叠加" 视觉效果：
+   Qt QSS 的 rgba 会替换底色而非叠加，故改用预计算纯色保住底色。
+   hover ≈ #EDF1F7 + 4% 黑，pressed ≈ #EDF1F7 + 8% 黑。 */
+QWidget#settingsView QPushButton[cssClass="outline"],
+QWidget#settingsView QComboBox {
+    background-color: #EDF1F7;
+}
+QWidget#settingsView QPushButton[cssClass="outline"]:hover,
+QWidget#settingsView QComboBox:hover {
+    background-color: #E4E8EF;
+}
+QWidget#settingsView QPushButton[cssClass="outline"]:pressed,
+QWidget#settingsView QComboBox:pressed {
+    background-color: #DBDFE6;
+}
+
 /* 4 段强度条容器（ProgramPasswordDialog 用） */
 QFrame[cssClass="strengthBar"] {
     background: transparent;
@@ -732,6 +774,9 @@ QLabel[cssClass="strengthSeg"] {
     min-height: 6px;
     max-height: 6px;
 }
+QLabel[cssClass="strengthSeg"][strength="veryweak"] {
+    background-color: #b91c1c;
+}
 QLabel[cssClass="strengthSeg"][strength="weak"] {
     background-color: #dc2626;
 }
@@ -740,6 +785,9 @@ QLabel[cssClass="strengthSeg"][strength="medium"] {
 }
 QLabel[cssClass="strengthSeg"][strength="strong"] {
     background-color: #1f9d57;
+}
+QLabel[cssClass="strengthSeg"][strength="verystrong"] {
+    background-color: #0f7a3d;
 }
 
 /* 字段行（详情区每个字段一行的容器，带细分隔线） */

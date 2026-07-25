@@ -54,6 +54,46 @@ public:
 
     /// 回滚事务。
     virtual Error rollback_transaction() = 0;
+
+    // -----------------------------------------------------------------------
+    // 生成器历史记录
+    // -----------------------------------------------------------------------
+    // 与 PasswordEntry 类似的加密/解密策略：
+    //   - 明文模式（未启用程序密码）：password 为明文，iv/tag 为空
+    //   - 加密模式：password 为密文 BLOB，iv/tag 由 ICryptoEngine 填充
+    // 调用方（ServiceCore）负责加解密；存储引擎只做 BLOB 存取。
+
+    /// 新增一条生成记录。`record.id` 通常为 0（由实现分配）。
+    /// \return 成功时返回带分配 id 与 created_at 的记录
+    virtual Result<GeneratedPasswordRecord> add_generated_record(
+        const GeneratedPasswordRecord& record) = 0;
+
+    /// 更新已存在生成记录的加密字段（password/length/iv/tag）。`record.id` 必须非 0。
+    /// created_at 保持不变（用于 enable/disable 程序密码时重加密但不丢失时间戳）。
+    /// 未找到 id 时返回 NotFound。
+    virtual Result<GeneratedPasswordRecord> update_generated_record(
+        const GeneratedPasswordRecord& record) = 0;
+
+    /// 列出全部生成记录（按 created_at 倒序）。
+    virtual Result<std::vector<GeneratedPasswordRecord>> list_generated_records() = 0;
+
+    /// 按 id 删除单条生成记录。
+    virtual Error remove_generated_record(int64_t id) = 0;
+
+    /// 清空全部生成记录。
+    virtual Error clear_generated_records() = 0;
+
+    // -----------------------------------------------------------------------
+    // 通用 KV 设置存储
+    // -----------------------------------------------------------------------
+    // 用于持久化少量应用级设置（如生成器历史记录上限）。
+    // key/value 均为字符串，由调用方负责类型转换。
+
+    /// 读取设置项；不存在时返回空字符串（不视为错误）。
+    virtual Result<std::string> get_setting(const std::string& key) = 0;
+
+    /// 写入或更新设置项；value 为空字符串等价于删除该 key。
+    virtual Error set_setting(const std::string& key, const std::string& value) = 0;
 };
 
 }  // namespace pwdvault::core

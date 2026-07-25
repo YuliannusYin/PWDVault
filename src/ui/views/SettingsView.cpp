@@ -8,6 +8,7 @@
 #include "SettingsView.h"
 #include "IpcClient.h"
 #include "ProgramPasswordDialog.h"
+#include "GeneratorHistoryDialog.h"
 #include "Theme.h"
 #include "IconKit.h"
 
@@ -35,7 +36,7 @@ namespace pwdvault::ui {
 namespace {
 
 /// 应用版本号。
-constexpr const char* kAppVersion = "3.0.0";
+constexpr const char* kAppVersion = "3.1.0";
 
 /// GitHub 项目主页 URL。
 constexpr const char* kGitHubUrl = "https://github.com/YuliannusYin/PWDVault";
@@ -185,6 +186,41 @@ void SettingsView::build_ui() {
                 QStringLiteral("切换深色 / 浅色模式"), seg);
     }
 
+    // ── 生成器 section ──
+    {
+        auto* section = make_section(QStringLiteral(":/icons/wand-2.svg"),
+                                     QStringLiteral("生成器"), false, center_container,
+                                     QColor(QStringLiteral("#3B6BFF")));
+        center_layout->addWidget(section);
+        auto* section_layout = qobject_cast<QVBoxLayout*>(section->layout());
+
+        // 历史记录行：左描述动态显示「已保存 N 条记录 / 暂无记录」
+        view_history_btn_ = new QPushButton(section);
+        view_history_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/clock.svg"), IconRole::Normal));
+        view_history_btn_->setIconSize(QSize(16, 16));
+        view_history_btn_->setText(QStringLiteral("查看记录"));
+        view_history_btn_->setCursor(Qt::PointingHandCursor);
+        view_history_btn_->setFixedHeight(40);
+        view_history_btn_->setProperty("cssClass", QStringLiteral("outline"));
+        add_row(section_layout, QStringLiteral("密码生成记录"),
+                QStringLiteral("加载中…"), view_history_btn_, &gen_history_desc_);
+
+        // 上限下拉：item data 携带实际数值（0 = 无限制）
+        gen_limit_combo_ = new QComboBox(section);
+        gen_limit_combo_->setObjectName(QStringLiteral("settingsGenLimit"));
+        gen_limit_combo_->addItem(QStringLiteral("无限制"), QVariant(0));
+        gen_limit_combo_->addItem(QStringLiteral("10 条"), QVariant(10));
+        gen_limit_combo_->addItem(QStringLiteral("20 条"), QVariant(20));
+        gen_limit_combo_->addItem(QStringLiteral("50 条"), QVariant(50));
+        gen_limit_combo_->addItem(QStringLiteral("100 条"), QVariant(100));
+        gen_limit_combo_->addItem(QStringLiteral("200 条"), QVariant(200));
+        gen_limit_combo_->setCurrentIndex(0);
+        gen_limit_combo_->setFixedHeight(40);
+        gen_limit_combo_->setMinimumWidth(120);
+        add_row(section_layout, QStringLiteral("记录上限"),
+                QStringLiteral("保留最近 N 条生成记录，超出自动清理"), gen_limit_combo_);
+    }
+
     // ── 存储 section ──
     {
         auto* section = make_section(QStringLiteral(":/icons/database.svg"),
@@ -292,6 +328,10 @@ void SettingsView::build_ui() {
             this, &SettingsView::on_open_github_clicked);
     connect(lock_now_btn_, &QPushButton::clicked,
             this, &SettingsView::on_lock_now_clicked);
+    connect(view_history_btn_, &QPushButton::clicked,
+            this, &SettingsView::on_view_generator_history_clicked);
+    connect(gen_limit_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &SettingsView::on_generator_limit_changed);
 }
 
 QFrame* SettingsView::make_section(const QString& icon_resource,
@@ -445,6 +485,46 @@ void SettingsView::refresh_entry_count() {
     }
 }
 
+void SettingsView::refresh_generator_settings() {
+    if (!client_) {
+        if (gen_history_desc_) gen_history_desc_->setText(QStringLiteral("-"));
+        return;
+    }
+
+    // 历史记录条数
+    auto list_result = client_->list_generated_records();
+    if (gen_history_desc_) {
+        if (list_result.ok()) {
+            const int n = static_cast<int>(list_result.value().records.size());
+            gen_history_desc_->setText(
+                n == 0 ? QStringLiteral("暂无记录")
+                       : QStringLiteral("已保存 %1 条记录").arg(n));
+        } else {
+            gen_history_desc_->setText(QStringLiteral("-"));
+        }
+    }
+
+    // 上限下拉：以 service 端持久化的值为准
+    auto settings_result = client_->get_generator_settings();
+    if (!settings_result.ok()) return;
+    const int32_t limit = settings_result.value().history_limit;
+    // 找到与 limit 匹配的项；无匹配时（数值不在候选中）回退到「无限制」
+    int target_index = 0;
+    if (gen_limit_combo_) {
+        gen_limit_syncing_ = true;
+        for (int i = 0; i < gen_limit_combo_->count(); ++i) {
+            const int v = gen_limit_combo_->itemData(i).toInt();
+            if (v == limit) {
+                target_index = i;
+                break;
+            }
+        }
+        QSignalBlocker blocker(gen_limit_combo_);
+        gen_limit_combo_->setCurrentIndex(target_index);
+        gen_limit_syncing_ = false;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 状态刷新
 // ---------------------------------------------------------------------------
@@ -467,6 +547,7 @@ void SettingsView::refresh_status() {
     password_enabled_ = result.value().password_enabled;
     refresh_password_badge();
     refresh_entry_count();
+    refresh_generator_settings();
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +606,50 @@ void SettingsView::on_theme_segment_clicked(int idx) {
         case 1: Theme::set_mode(Theme::Mode::Dark); break;
         case 2: Theme::set_mode(Theme::Mode::System); break;
         default: break;
+    }
+}
+
+void SettingsView::on_view_generator_history_clicked() {
+    if (!client_) return;
+    auto* dlg = new GeneratorHistoryDialog(client_, this);
+    // 关闭后自动清理 + 刷新本页「已保存 N 条记录」描述
+    connect(dlg, &QDialog::finished, this, [this]() {
+        // 重新查 service：可能用户在弹窗里删除/清空了记录
+        if (client_) {
+            auto list_result = client_->list_generated_records();
+            if (gen_history_desc_ && list_result.ok()) {
+                const int n = static_cast<int>(list_result.value().records.size());
+                gen_history_desc_->setText(
+                    n == 0 ? QStringLiteral("暂无记录")
+                           : QStringLiteral("已保存 %1 条记录").arg(n));
+            }
+        }
+    });
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->show();
+}
+
+void SettingsView::on_generator_limit_changed(int index) {
+    if (gen_limit_syncing_) return;
+    if (!client_ || !gen_limit_combo_) return;
+    if (index < 0) return;
+    const int limit = gen_limit_combo_->itemData(index).toInt();
+    auto result = client_->set_generator_limit(static_cast<int32_t>(limit));
+    if (!result.ok()) {
+        QMessageBox::warning(this, QStringLiteral("设置失败"),
+            QString::fromStdString(result.error().what()));
+        // 失败时回退下拉到 service 端实际值
+        refresh_generator_settings();
+    }
+    // 成功时同步刷新历史记录条数描述（清理可能减少记录数）
+    if (gen_history_desc_ && limit > 0) {
+        auto list_result = client_->list_generated_records();
+        if (list_result.ok()) {
+            const int n = static_cast<int>(list_result.value().records.size());
+            gen_history_desc_->setText(
+                n == 0 ? QStringLiteral("暂无记录")
+                       : QStringLiteral("已保存 %1 条记录").arg(n));
+        }
     }
 }
 

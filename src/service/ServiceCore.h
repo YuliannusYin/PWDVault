@@ -75,6 +75,11 @@ private:
     core::ByteVec handle_list_entries();
     core::ByteVec handle_generate_password(core::ByteSpan payload);
     core::ByteVec handle_estimate_strength(core::ByteSpan payload);
+    core::ByteVec handle_list_generated_records();
+    core::ByteVec handle_remove_generated_record(core::ByteSpan payload);
+    core::ByteVec handle_clear_generated_records();
+    core::ByteVec handle_get_generator_settings();
+    core::ByteVec handle_set_generator_limit(core::ByteSpan payload);
 
     /// 构造 ErrorResponse 的序列化字节。
     core::ByteVec make_error(core::ErrorCode code, std::string message) const;
@@ -87,6 +92,24 @@ private:
     /// 解密 entry.password，清空 iv/tag。
     /// 明文模式下直接返回 entry 不做解密。
     core::Result<core::PasswordEntry> decrypt_entry(core::PasswordEntry entry) const;
+
+    /// 加密 GeneratedPasswordRecord.password，填充 iv/tag。
+    /// 明文模式下直接返回 record 不做加密。
+    core::Result<core::GeneratedPasswordRecord> encrypt_generated_record(
+        core::GeneratedPasswordRecord record) const;
+
+    /// 解密 GeneratedPasswordRecord.password，清空 iv/tag。
+    /// 明文模式下直接返回 record 不做解密。
+    core::Result<core::GeneratedPasswordRecord> decrypt_generated_record(
+        core::GeneratedPasswordRecord record) const;
+
+    /// 当前历史记录上限（从 settings 表读取，0 表示无限制）。
+    /// 调用方需持锁。
+    int32_t current_generator_limit();
+
+    /// 将超出 limit 的旧记录按 FIFO 删除。limit=0 时不做任何事。
+    /// 调用方需持锁。
+    core::Error enforce_generator_limit(int32_t limit);
 
     /// 设置 encryption_key 并构造 entry_crypto_。调用方需持锁。
     void set_encryption_key(core::ByteVec key);

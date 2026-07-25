@@ -40,6 +40,11 @@ enum class CommandId : uint16_t {
 
     GeneratePassword = 0x0300,  ///< 按选项生成密码
     EstimateStrength = 0x0301,  ///< 评估给定密码的强度（熵 bit 数）
+    ListGeneratedRecords  = 0x0302,  ///< 列出生成器历史记录
+    RemoveGeneratedRecord = 0x0303,  ///< 按 id 删除单条生成记录
+    ClearGeneratedRecords = 0x0304,  ///< 清空全部生成记录
+    GetGeneratorSettings  = 0x0305,  ///< 查询生成器设置（历史记录上限）
+    SetGeneratorLimit     = 0x0306,  ///< 设置历史记录上限（0=无限制）
 };
 
 /// 返回命令的可读名称，便于日志输出与调试。

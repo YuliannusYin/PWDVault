@@ -8,6 +8,7 @@
 #include "EditEntryDialog.h"
 #include "IpcClient.h"
 #include "IconKit.h"
+#include "StrengthUtil.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -62,18 +63,7 @@ QString avatar_letter(const std::string& website) {
 }
 
 /// 强度颜色（< 40 红、40-80 黄、> 80 绿）。
-QString strength_text_for_bits(int bits) {
-    if (bits < 40) return QStringLiteral("弱");
-    if (bits < 80) return QStringLiteral("中");
-    return QStringLiteral("强");
-}
-
-/// 强度对应的 badge cssClass。
-QString strength_badge_class(int bits) {
-    if (bits < 40) return QStringLiteral("badgeDanger");
-    if (bits < 80) return QStringLiteral("badgeWarning");
-    return QStringLiteral("badgeSuccess");
-}
+/// 等级判定与文案统一通过 StrengthUtil 提供（按 core::StrengthLevel 输入）。
 
 /// 36x36 图标按钮（无文字）。
 QPushButton* make_icon_btn(const QString& svg_path, IconRole role,
@@ -632,9 +622,9 @@ void PasswordBookView::load_detail(const core::PasswordEntry& entry) {
     if (client_) {
         auto r = client_->estimate_strength(entry.password);
         if (r.ok()) {
-            const int bits = r.value().strength_bits;
-            strength_badge_->setText(strength_text_for_bits(bits));
-            strength_badge_->setProperty("cssClass", strength_badge_class(bits));
+            const auto level = r.value().estimate.level;
+            strength_badge_->setText(strength_text(level));
+            strength_badge_->setProperty("cssClass", strength_badge_class(level));
             strength_badge_->style()->unpolish(strength_badge_);
             strength_badge_->style()->polish(strength_badge_);
             strength_badge_->show();

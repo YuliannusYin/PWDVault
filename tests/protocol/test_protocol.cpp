@@ -569,12 +569,53 @@ TEST(ProtocolResponseRoundtrip, GeneratePasswordResponse) {
 }
 
 TEST(ProtocolResponseRoundtrip, EstimateStrengthResponse) {
-    using namespace pwdvault::protocol;
-    EstimateStrengthResponse orig{ 96 };
-    auto bytes = serialize(orig);
-    auto r = deserialize<EstimateStrengthResponse>(bytes);
+    using namespace pwdvault;
+    protocol::EstimateStrengthResponse orig;
+    orig.estimate.bits = 96;
+    orig.estimate.level = core::StrengthLevel::Strong;
+    orig.estimate.score = 3;
+    orig.estimate.warnings = {"检测到 3 位顺序字符序列", "检测到键盘序列（长度 4）"};
+    auto bytes = protocol::serialize(orig);
+    auto r = protocol::deserialize<protocol::EstimateStrengthResponse>(bytes);
     ASSERT_TRUE(r.ok()) << r.error().what();
-    EXPECT_EQ(r.value().strength_bits, orig.strength_bits);
+    EXPECT_EQ(r.value().estimate.bits, orig.estimate.bits);
+    EXPECT_EQ(r.value().estimate.level, orig.estimate.level);
+    EXPECT_EQ(r.value().estimate.score, orig.estimate.score);
+    EXPECT_EQ(r.value().estimate.warnings, orig.estimate.warnings);
+}
+
+TEST(ProtocolTypeRoundtrip, StrengthEstimate) {
+    using namespace pwdvault;
+    core::StrengthEstimate orig;
+    orig.bits = 0;
+    orig.level = core::StrengthLevel::VeryWeak;
+    orig.score = 0;
+    // 空 warnings
+    auto bytes = protocol::serialize(orig);
+    auto r = protocol::deserialize<core::StrengthEstimate>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_EQ(r.value().bits, 0);
+    EXPECT_EQ(r.value().level, core::StrengthLevel::VeryWeak);
+    EXPECT_EQ(r.value().score, 0);
+    EXPECT_TRUE(r.value().warnings.empty());
+}
+
+TEST(ProtocolTypeRoundtrip, StrengthEstimateAllLevels) {
+    using namespace pwdvault;
+    for (int lvl = 0; lvl <= 4; ++lvl) {
+        core::StrengthEstimate orig;
+        orig.bits = 50 + lvl * 10;
+        orig.level = static_cast<core::StrengthLevel>(lvl);
+        orig.score = lvl;
+        orig.warnings = {"warning " + std::to_string(lvl)};
+        auto bytes = protocol::serialize(orig);
+        auto r = protocol::deserialize<core::StrengthEstimate>(bytes);
+        ASSERT_TRUE(r.ok()) << r.error().what() << " at level=" << lvl;
+        EXPECT_EQ(r.value().bits, orig.bits);
+        EXPECT_EQ(r.value().level, orig.level);
+        EXPECT_EQ(r.value().score, orig.score);
+        EXPECT_EQ(r.value().warnings, orig.warnings);
+    }
 }
 
 TEST(ProtocolResponseRoundtrip, EmptyResponses) {
@@ -721,4 +762,192 @@ TEST(ProtocolDeserializeError, TruncatedPasswordEntry) {
     auto r = deserialize<pwdvault::core::PasswordEntry>(bad);
     ASSERT_FALSE(r.ok());
     EXPECT_EQ(r.error().code, pwdvault::core::ErrorCode::InvalidArgument);
+}
+
+// ===========================================================================
+// 生成器历史记录相关消息 round-trip
+// ===========================================================================
+
+TEST(ProtocolCoreRoundtrip, GeneratedPasswordRecord) {
+    using namespace pwdvault::protocol;
+    pwdvault::core::GeneratedPasswordRecord rec;
+    rec.id = 123;
+    rec.password = "P@ssw0rd-Generated!";
+    rec.length = 20;
+    rec.created_at = 1700000000;
+    rec.iv = make_bytes("012345678901");
+    rec.tag = make_bytes("0123456789012345");
+
+    auto bytes = serialize(rec);
+    auto r = deserialize<pwdvault::core::GeneratedPasswordRecord>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_EQ(r.value().id, rec.id);
+    EXPECT_EQ(r.value().password, rec.password);
+    EXPECT_EQ(r.value().length, rec.length);
+    EXPECT_EQ(r.value().created_at, rec.created_at);
+    EXPECT_EQ(r.value().iv, rec.iv);
+    EXPECT_EQ(r.value().tag, rec.tag);
+}
+
+TEST(ProtocolCoreRoundtrip, GeneratedPasswordRecordPlaintextMode) {
+    // 明文模式：iv / tag 为空，password 字段直接为明文
+    using namespace pwdvault::protocol;
+    pwdvault::core::GeneratedPasswordRecord rec;
+    rec.id = 7;
+    rec.password = "plaintext-pwd";
+    rec.length = 13;
+    rec.created_at = 1711111111;
+    // iv / tag 留空
+
+    auto bytes = serialize(rec);
+    auto r = deserialize<pwdvault::core::GeneratedPasswordRecord>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_EQ(r.value().id, rec.id);
+    EXPECT_EQ(r.value().password, rec.password);
+    EXPECT_EQ(r.value().length, rec.length);
+    EXPECT_EQ(r.value().created_at, rec.created_at);
+    EXPECT_TRUE(r.value().iv.empty());
+    EXPECT_TRUE(r.value().tag.empty());
+}
+
+TEST(ProtocolRequestRoundtrip, RemoveGeneratedRecordRequest) {
+    using namespace pwdvault::protocol;
+    RemoveGeneratedRecordRequest req;
+    req.id = 999;
+    auto bytes = serialize(req);
+    auto r = deserialize<RemoveGeneratedRecordRequest>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_EQ(r.value().id, req.id);
+}
+
+TEST(ProtocolRequestRoundtrip, SetGeneratorLimitRequest) {
+    using namespace pwdvault::protocol;
+    SetGeneratorLimitRequest req;
+    req.limit = 20;
+    auto bytes = serialize(req);
+    auto r = deserialize<SetGeneratorLimitRequest>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_EQ(r.value().limit, req.limit);
+}
+
+TEST(ProtocolRequestRoundtrip, SetGeneratorLimitRequestUnlimited) {
+    // 0 = 无限制
+    using namespace pwdvault::protocol;
+    SetGeneratorLimitRequest req;
+    req.limit = 0;
+    auto bytes = serialize(req);
+    auto r = deserialize<SetGeneratorLimitRequest>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_EQ(r.value().limit, 0);
+}
+
+TEST(ProtocolResponseRoundtrip, ListGeneratedRecordsResponse) {
+    using namespace pwdvault::protocol;
+    ListGeneratedRecordsResponse resp;
+    pwdvault::core::GeneratedPasswordRecord r1;
+    r1.id = 1;
+    r1.password = "pwd1";
+    r1.length = 4;
+    r1.created_at = 100;
+    pwdvault::core::GeneratedPasswordRecord r2;
+    r2.id = 2;
+    r2.password = "pwd2-longer";
+    r2.length = 11;
+    r2.created_at = 200;
+    r2.iv = make_bytes("iv-12-bytes!");
+    r2.tag = make_bytes("tag-16-bytes!!!");
+    resp.records.push_back(r1);
+    resp.records.push_back(r2);
+
+    auto bytes = serialize(resp);
+    auto r = deserialize<ListGeneratedRecordsResponse>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    ASSERT_EQ(r.value().records.size(), 2u);
+    EXPECT_EQ(r.value().records[0].id, 1);
+    EXPECT_EQ(r.value().records[0].password, "pwd1");
+    EXPECT_EQ(r.value().records[1].id, 2);
+    EXPECT_EQ(r.value().records[1].password, "pwd2-longer");
+    EXPECT_EQ(r.value().records[1].iv, r2.iv);
+    EXPECT_EQ(r.value().records[1].tag, r2.tag);
+}
+
+TEST(ProtocolResponseRoundtrip, ListGeneratedRecordsResponseEmpty) {
+    using namespace pwdvault::protocol;
+    ListGeneratedRecordsResponse resp;  // 空
+    auto bytes = serialize(resp);
+    auto r = deserialize<ListGeneratedRecordsResponse>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_TRUE(r.value().records.empty());
+}
+
+TEST(ProtocolResponseRoundtrip, GetGeneratorSettingsResponse) {
+    using namespace pwdvault::protocol;
+    GetGeneratorSettingsResponse resp;
+    resp.history_limit = 50;
+    auto bytes = serialize(resp);
+    auto r = deserialize<GetGeneratorSettingsResponse>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_EQ(r.value().history_limit, 50);
+}
+
+TEST(ProtocolResponseRoundtrip, SetGeneratorLimitResponseSuccess) {
+    using namespace pwdvault::protocol;
+    SetGeneratorLimitResponse resp;
+    resp.success = true;
+    auto bytes = serialize(resp);
+    auto r = deserialize<SetGeneratorLimitResponse>(bytes);
+    ASSERT_TRUE(r.ok()) << r.error().what();
+    EXPECT_TRUE(r.value().success);
+}
+
+TEST(ProtocolDeserializeError, TruncatedGeneratedPasswordRecord) {
+    using namespace pwdvault::protocol;
+    pwdvault::core::ByteVec bad(4, std::byte{0});
+    auto r = deserialize<pwdvault::core::GeneratedPasswordRecord>(bad);
+    ASSERT_FALSE(r.ok());
+    EXPECT_EQ(r.error().code, pwdvault::core::ErrorCode::InvalidArgument);
+}
+
+// ---------------------------------------------------------------------------
+// 生成器相关空负载结构 round-trip
+// ---------------------------------------------------------------------------
+
+TEST(ProtocolRoundtrip, GeneratedEmptyPayloads) {
+    using namespace pwdvault::protocol;
+    // 5 个空负载结构：serialize 返回空 ByteVec，deserialize 空输入返回 Ok
+    {
+        ListGeneratedRecordsRequest req;
+        auto bytes = serialize(req);
+        EXPECT_TRUE(bytes.empty());  // 空请求应产生空负载
+        auto r = deserialize<ListGeneratedRecordsRequest>(bytes);
+        ASSERT_TRUE(r.ok()) << r.error().what();
+    }
+    {
+        ClearGeneratedRecordsRequest req;
+        auto bytes = serialize(req);
+        EXPECT_TRUE(bytes.empty());
+        auto r = deserialize<ClearGeneratedRecordsRequest>(bytes);
+        ASSERT_TRUE(r.ok()) << r.error().what();
+    }
+    {
+        GetGeneratorSettingsRequest req;
+        auto bytes = serialize(req);
+        EXPECT_TRUE(bytes.empty());
+        auto r = deserialize<GetGeneratorSettingsRequest>(bytes);
+        ASSERT_TRUE(r.ok()) << r.error().what();
+    }
+    {
+        RemoveGeneratedRecordResponse resp;
+        auto bytes = serialize(resp);
+        EXPECT_TRUE(bytes.empty());  // 空响应应产生空负载
+        auto r = deserialize<RemoveGeneratedRecordResponse>(bytes);
+        ASSERT_TRUE(r.ok()) << r.error().what();
+    }
+    {
+        ClearGeneratedRecordsResponse resp;
+        auto bytes = serialize(resp);
+        EXPECT_TRUE(bytes.empty());
+        auto r = deserialize<ClearGeneratedRecordsResponse>(bytes);
+        ASSERT_TRUE(r.ok()) << r.error().what();
+    }
 }

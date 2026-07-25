@@ -204,6 +204,11 @@ std::string_view command_name(CommandId cmd) noexcept {
         case CommandId::ListEntries:      return "ListEntries";
         case CommandId::GeneratePassword: return "GeneratePassword";
         case CommandId::EstimateStrength: return "EstimateStrength";
+        case CommandId::ListGeneratedRecords:  return "ListGeneratedRecords";
+        case CommandId::RemoveGeneratedRecord: return "RemoveGeneratedRecord";
+        case CommandId::ClearGeneratedRecords: return "ClearGeneratedRecords";
+        case CommandId::GetGeneratorSettings:  return "GetGeneratorSettings";
+        case CommandId::SetGeneratorLimit:     return "SetGeneratorLimit";
     }
     return "Unknown";
 }
@@ -619,7 +624,102 @@ bool read_password_entry_vector(Reader& r, std::vector<core::PasswordEntry>& out
     return true;
 }
 
+/// 写入 GeneratedPasswordRecord：id(i64) + password(string) + length(i32) +
+/// created_at(i64) + iv(byte_vec) + tag(byte_vec)。
+void write_generated_record(Writer& w, const core::GeneratedPasswordRecord& r) {
+    w.write_i64(r.id);
+    w.write_string(r.password);
+    // int32_t 在线路上以 i64 传输以保持序列化器一致风格
+    w.write_i64(static_cast<int64_t>(r.length));
+    w.write_i64(r.created_at);
+    w.write_byte_vec(r.iv);
+    w.write_byte_vec(r.tag);
+}
+
+bool read_generated_record(Reader& r, core::GeneratedPasswordRecord& out) {
+    int64_t tmp = 0;
+    if (!r.read_i64(out.id)) return false;
+    if (!r.read_string(out.password)) return false;
+    if (!r.read_i64(tmp)) return false;
+    out.length = static_cast<int32_t>(tmp);
+    if (!r.read_i64(out.created_at)) return false;
+    if (!r.read_byte_vec(out.iv)) return false;
+    if (!r.read_byte_vec(out.tag)) return false;
+    return true;
+}
+
+void write_generated_record_vector(Writer& w,
+                                    const std::vector<core::GeneratedPasswordRecord>& v) {
+    w.write_u32(static_cast<uint32_t>(v.size()));
+    for (const auto& r : v) {
+        write_generated_record(w, r);
+    }
+}
+
+bool read_generated_record_vector(Reader& r,
+                                   std::vector<core::GeneratedPasswordRecord>& out) {
+    uint32_t count = 0;
+    if (!r.read_u32(count)) return false;
+    if (count > r.remaining()) return false;
+    out.clear();
+    out.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        core::GeneratedPasswordRecord rec;
+        if (!read_generated_record(r, rec)) return false;
+        out.push_back(std::move(rec));
+    }
+    return true;
+}
+
+/// 写入 StrengthEstimate：bits(i64) + level(u8) + score(i64) + warnings(vec<string>)。
+/// StrengthLevel 底层为 uint8_t，直接序列化其底层值。
+void write_strength_estimate(Writer& w, const core::StrengthEstimate& s) {
+    w.write_i64(s.bits);
+    const uint8_t level_byte = static_cast<uint8_t>(s.level);
+    w.write_bytes(&level_byte, sizeof(level_byte));
+    w.write_i64(s.score);
+    w.write_u32(static_cast<uint32_t>(s.warnings.size()));
+    for (const auto& warn : s.warnings) {
+        w.write_string(warn);
+    }
+}
+
+bool read_strength_estimate(Reader& r, core::StrengthEstimate& out) {
+    int64_t bits_tmp = 0;
+    if (!r.read_i64(bits_tmp)) return false;
+    out.bits = static_cast<int>(bits_tmp);
+    uint8_t level_byte = 0;
+    if (!r.read_bytes(&level_byte, sizeof(level_byte))) return false;
+    out.level = static_cast<core::StrengthLevel>(level_byte);
+    int64_t score_tmp = 0;
+    if (!r.read_i64(score_tmp)) return false;
+    out.score = static_cast<int>(score_tmp);
+    uint32_t count = 0;
+    if (!r.read_u32(count)) return false;
+    if (count > r.remaining()) return false;  // 粗略上界保护
+    out.warnings.clear();
+    out.warnings.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        std::string s;
+        if (!r.read_string(s)) return false;
+        out.warnings.push_back(std::move(s));
+    }
+    return true;
+}
+
 }  // anonymous namespace
+
+template <> core::ByteVec serialize<core::StrengthEstimate>(const core::StrengthEstimate& v) {
+    Writer w; write_strength_estimate(w, v); return w.take();
+}
+template <> core::Result<core::StrengthEstimate> deserialize<core::StrengthEstimate>(core::ByteSpan data) {
+    Reader r(data); core::StrengthEstimate v;
+    if (!read_strength_estimate(r, v)) {
+        return core::Result<core::StrengthEstimate>::Err(
+            make_error("deserialize<StrengthEstimate>: malformed"));
+    }
+    return core::Result<core::StrengthEstimate>::Ok(std::move(v));
+}
 
 template <> core::ByteVec serialize<SearchEntriesResponse>(const SearchEntriesResponse& v) {
     Writer w; write_password_entry_vector(w, v.entries); return w.take();
@@ -649,14 +749,137 @@ template <> core::Result<GeneratePasswordResponse> deserialize<GeneratePasswordR
 }
 
 template <> core::ByteVec serialize<EstimateStrengthResponse>(const EstimateStrengthResponse& v) {
-    Writer w; w.write_i64(v.strength_bits); return w.take();
+    Writer w;
+    write_strength_estimate(w, v.estimate);
+    return w.take();
 }
 template <> core::Result<EstimateStrengthResponse> deserialize<EstimateStrengthResponse>(core::ByteSpan data) {
     Reader r(data); EstimateStrengthResponse v;
+    if (!read_strength_estimate(r, v.estimate)) {
+        return core::Result<EstimateStrengthResponse>::Err(
+            make_error("deserialize<EstimateStrengthResponse>: malformed"));
+    }
+    return core::Result<EstimateStrengthResponse>::Ok(std::move(v));
+}
+
+// ---------------------------------------------------------------------------
+// 生成器历史记录相关
+// ---------------------------------------------------------------------------
+
+template <> core::ByteVec serialize<core::GeneratedPasswordRecord>(const core::GeneratedPasswordRecord& v) {
+    Writer w; write_generated_record(w, v); return w.take();
+}
+template <> core::Result<core::GeneratedPasswordRecord> deserialize<core::GeneratedPasswordRecord>(core::ByteSpan data) {
+    Reader r(data); core::GeneratedPasswordRecord v;
+    if (!read_generated_record(r, v)) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            make_error("deserialize<GeneratedPasswordRecord>: malformed"));
+    }
+    return core::Result<core::GeneratedPasswordRecord>::Ok(std::move(v));
+}
+
+template <> core::ByteVec serialize<ListGeneratedRecordsRequest>(const ListGeneratedRecordsRequest&) {
+    return {};  // 无负载
+}
+template <> core::Result<ListGeneratedRecordsRequest> deserialize<ListGeneratedRecordsRequest>(core::ByteSpan) {
+    return core::Result<ListGeneratedRecordsRequest>::Ok(ListGeneratedRecordsRequest{});
+}
+
+template <> core::ByteVec serialize<RemoveGeneratedRecordRequest>(const RemoveGeneratedRecordRequest& v) {
+    Writer w; w.write_i64(v.id); return w.take();
+}
+template <> core::Result<RemoveGeneratedRecordRequest> deserialize<RemoveGeneratedRecordRequest>(core::ByteSpan data) {
+    Reader r(data); RemoveGeneratedRecordRequest v;
+    if (!r.read_i64(v.id)) {
+        return core::Result<RemoveGeneratedRecordRequest>::Err(
+            make_error("deserialize<RemoveGeneratedRecordRequest>: malformed"));
+    }
+    return core::Result<RemoveGeneratedRecordRequest>::Ok(v);
+}
+
+template <> core::ByteVec serialize<ClearGeneratedRecordsRequest>(const ClearGeneratedRecordsRequest&) {
+    return {};
+}
+template <> core::Result<ClearGeneratedRecordsRequest> deserialize<ClearGeneratedRecordsRequest>(core::ByteSpan) {
+    return core::Result<ClearGeneratedRecordsRequest>::Ok(ClearGeneratedRecordsRequest{});
+}
+
+template <> core::ByteVec serialize<GetGeneratorSettingsRequest>(const GetGeneratorSettingsRequest&) {
+    return {};
+}
+template <> core::Result<GetGeneratorSettingsRequest> deserialize<GetGeneratorSettingsRequest>(core::ByteSpan) {
+    return core::Result<GetGeneratorSettingsRequest>::Ok(GetGeneratorSettingsRequest{});
+}
+
+template <> core::ByteVec serialize<SetGeneratorLimitRequest>(const SetGeneratorLimitRequest& v) {
+    Writer w; w.write_i64(static_cast<int64_t>(v.limit)); return w.take();
+}
+template <> core::Result<SetGeneratorLimitRequest> deserialize<SetGeneratorLimitRequest>(core::ByteSpan data) {
+    Reader r(data); SetGeneratorLimitRequest v;
     int64_t tmp = 0;
-    if (!r.read_i64(tmp)) return core::Result<EstimateStrengthResponse>::Err(make_error("deserialize<EstimateStrengthResponse>: data too short"));
-    v.strength_bits = static_cast<int>(tmp);
-    return core::Result<EstimateStrengthResponse>::Ok(v);
+    if (!r.read_i64(tmp)) {
+        return core::Result<SetGeneratorLimitRequest>::Err(
+            make_error("deserialize<SetGeneratorLimitRequest>: malformed"));
+    }
+    v.limit = static_cast<int32_t>(tmp);
+    return core::Result<SetGeneratorLimitRequest>::Ok(v);
+}
+
+template <> core::ByteVec serialize<ListGeneratedRecordsResponse>(const ListGeneratedRecordsResponse& v) {
+    Writer w; write_generated_record_vector(w, v.records); return w.take();
+}
+template <> core::Result<ListGeneratedRecordsResponse> deserialize<ListGeneratedRecordsResponse>(core::ByteSpan data) {
+    Reader r(data); ListGeneratedRecordsResponse v;
+    if (!read_generated_record_vector(r, v.records)) {
+        return core::Result<ListGeneratedRecordsResponse>::Err(
+            make_error("deserialize<ListGeneratedRecordsResponse>: malformed"));
+    }
+    return core::Result<ListGeneratedRecordsResponse>::Ok(std::move(v));
+}
+
+template <> core::ByteVec serialize<RemoveGeneratedRecordResponse>(const RemoveGeneratedRecordResponse&) {
+    return {};
+}
+template <> core::Result<RemoveGeneratedRecordResponse> deserialize<RemoveGeneratedRecordResponse>(core::ByteSpan) {
+    return core::Result<RemoveGeneratedRecordResponse>::Ok(RemoveGeneratedRecordResponse{});
+}
+
+template <> core::ByteVec serialize<ClearGeneratedRecordsResponse>(const ClearGeneratedRecordsResponse&) {
+    return {};
+}
+template <> core::Result<ClearGeneratedRecordsResponse> deserialize<ClearGeneratedRecordsResponse>(core::ByteSpan) {
+    return core::Result<ClearGeneratedRecordsResponse>::Ok(ClearGeneratedRecordsResponse{});
+}
+
+template <> core::ByteVec serialize<GetGeneratorSettingsResponse>(const GetGeneratorSettingsResponse& v) {
+    Writer w; w.write_i64(static_cast<int64_t>(v.history_limit)); return w.take();
+}
+template <> core::Result<GetGeneratorSettingsResponse> deserialize<GetGeneratorSettingsResponse>(core::ByteSpan data) {
+    Reader r(data); GetGeneratorSettingsResponse v;
+    int64_t tmp = 0;
+    if (!r.read_i64(tmp)) {
+        return core::Result<GetGeneratorSettingsResponse>::Err(
+            make_error("deserialize<GetGeneratorSettingsResponse>: malformed"));
+    }
+    v.history_limit = static_cast<int32_t>(tmp);
+    return core::Result<GetGeneratorSettingsResponse>::Ok(v);
+}
+
+template <> core::ByteVec serialize<SetGeneratorLimitResponse>(const SetGeneratorLimitResponse& v) {
+    Writer w;
+    const uint8_t b = v.success ? 1 : 0;
+    w.write_bytes(&b, sizeof(b));
+    return w.take();
+}
+template <> core::Result<SetGeneratorLimitResponse> deserialize<SetGeneratorLimitResponse>(core::ByteSpan data) {
+    Reader r(data); SetGeneratorLimitResponse v;
+    uint8_t b = 0;
+    if (!r.read_bytes(&b, sizeof(b))) {
+        return core::Result<SetGeneratorLimitResponse>::Err(
+            make_error("deserialize<SetGeneratorLimitResponse>: malformed"));
+    }
+    v.success = (b != 0);
+    return core::Result<SetGeneratorLimitResponse>::Ok(v);
 }
 
 // ErrorResponse 在序列化时加魔数前缀，使其字节布局与任何正常响应不兼容。

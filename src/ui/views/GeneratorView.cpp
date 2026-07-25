@@ -8,6 +8,7 @@
 #include "GeneratorView.h"
 #include "IconKit.h"
 #include "IpcClient.h"
+#include "StrengthUtil.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -32,25 +33,7 @@ namespace pwdvault::ui {
 
 namespace {
 
-QString strength_text(int bits) {
-    if (bits < 40) return QStringLiteral("弱");
-    if (bits < 80) return QStringLiteral("中");
-    return QStringLiteral("强");
-}
-
-/// 强度对应的 strength key（与 QSS 中 QProgressBar[strength="..."]::chunk 对应）。
-QString strength_key(int bits) {
-    if (bits < 40) return QStringLiteral("weak");
-    if (bits < 80) return QStringLiteral("medium");
-    return QStringLiteral("strong");
-}
-
-/// 强度对应的 strength_label_ cssClass。
-QString strength_label_class(int bits) {
-    if (bits < 40) return QStringLiteral("error");
-    if (bits < 80) return QStringLiteral("warning");
-    return QStringLiteral("success");
-}
+// 强度等级判定与文案统一通过 StrengthUtil 提供（按 core::StrengthLevel 输入）。
 
 }  // namespace
 
@@ -336,22 +319,22 @@ void GeneratorView::update_strength(const QString& password) {
     }
 
     auto result = client_->estimate_strength(password.toStdString());
-    int bits = 0;
+    core::StrengthEstimate estimate;
     if (result.ok()) {
-        bits = result.value().strength_bits;
+        estimate = result.value().estimate;
     }
 
-    const int pct = (bits >= 128) ? 100 : (bits * 100 / 128);
+    const int pct = (estimate.bits >= 128) ? 100 : (estimate.bits * 100 / 128);
     strength_bar_->setValue(pct);
 
     // 通过 strength 属性让 QSS 接管 chunk 颜色
-    strength_bar_->setProperty("strength", strength_key(bits));
+    strength_bar_->setProperty("strength", strength_qss_key(estimate.level));
     strength_bar_->style()->unpolish(strength_bar_);
     strength_bar_->style()->polish(strength_bar_);
 
     set_strength_label(
-        QStringLiteral("强度：%1（%2 bit）").arg(strength_text(bits)).arg(bits),
-        strength_label_class(bits));
+        QStringLiteral("强度：%1（%2 bit）").arg(strength_text(estimate.level)).arg(estimate.bits),
+        strength_label_class(estimate.level));
 }
 
 void GeneratorView::set_strength_label(const QString& text, const QString& css_class) {

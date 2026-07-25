@@ -357,3 +357,302 @@ TEST(StorageEngineSqliteTest, SqliteTransactionRollbackAndCommit) {
     ASSERT_TRUE(list2.ok());
     EXPECT_EQ(list2.value().size(), 1u);
 }
+
+// ===========================================================================
+// InMemoryStorageEngine：生成器历史记录 CRUD
+// ===========================================================================
+
+namespace {
+
+pwdvault::core::GeneratedPasswordRecord make_gen_record(const std::string& password,
+                                                          int32_t length) {
+    pwdvault::core::GeneratedPasswordRecord r;
+    r.password = password;
+    r.length = length;
+    // iv / tag 留空（明文模式）；created_at 由引擎分配
+    return r;
+}
+
+}  // namespace
+
+TEST(InMemoryStorageEngineTest, AddGeneratedRecordAssignsIdAndTimestamp) {
+    pwdvault::storage::InMemoryStorageEngine engine;
+    auto r = make_gen_record("Pwd-Alpha", 10);
+    auto added = engine.add_generated_record(r);
+    ASSERT_TRUE(added.ok()) << added.error().what();
+    EXPECT_GT(added.value().id, 0);
+    EXPECT_GT(added.value().created_at, 0);
+    EXPECT_EQ(added.value().password, "Pwd-Alpha");
+    EXPECT_EQ(added.value().length, 10);
+}
+
+TEST(InMemoryStorageEngineTest, ListGeneratedRecordsSortedByCreatedAtDesc) {
+    pwdvault::storage::InMemoryStorageEngine engine;
+    auto a1 = engine.add_generated_record(make_gen_record("first", 5));
+    ASSERT_TRUE(a1.ok());
+    // 睡 1s 让 created_at 不同，避免出现相同时间戳
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    auto a2 = engine.add_generated_record(make_gen_record("second", 6));
+    ASSERT_TRUE(a2.ok());
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    auto a3 = engine.add_generated_record(make_gen_record("third", 5));
+    ASSERT_TRUE(a3.ok());
+
+    auto list = engine.list_generated_records();
+    ASSERT_TRUE(list.ok()) << list.error().what();
+    ASSERT_EQ(list.value().size(), 3u);
+    // 最新在前：third → second → first
+    EXPECT_EQ(list.value()[0].password, "third");
+    EXPECT_EQ(list.value()[1].password, "second");
+    EXPECT_EQ(list.value()[2].password, "first");
+}
+
+TEST(InMemoryStorageEngineTest, RemoveGeneratedRecordById) {
+    pwdvault::storage::InMemoryStorageEngine engine;
+    auto added = engine.add_generated_record(make_gen_record("to-delete", 11));
+    ASSERT_TRUE(added.ok());
+    const int64_t id = added.value().id;
+
+    EXPECT_TRUE(engine.remove_generated_record(id).ok());
+
+    auto list = engine.list_generated_records();
+    ASSERT_TRUE(list.ok());
+    EXPECT_TRUE(list.value().empty());
+}
+
+TEST(InMemoryStorageEngineTest, UpdateGeneratedRecordPreservesCreatedAt) {
+    pwdvault::storage::InMemoryStorageEngine engine;
+    auto added = engine.add_generated_record(make_gen_record("plain-pwd", 10));
+    ASSERT_TRUE(added.ok()) << added.error().what();
+    const int64_t id = added.value().id;
+    const int64_t original_ts = added.value().created_at;
+    ASSERT_GT(original_ts, 0);
+
+    // 模拟 enable_program_password 重加密：仅改 password/iv/tag，保留 id 与 created_at
+    pwdvault::core::GeneratedPasswordRecord updated = added.value();
+    updated.password = "cipher-blob";
+    updated.length = 10;
+    updated.iv = pwdvault::core::ByteVec(12, pwdvault::core::ByteVec::value_type{0xAA});
+    updated.tag = pwdvault::core::ByteVec(16, pwdvault::core::ByteVec::value_type{0xBB});
+
+    auto upd = engine.update_generated_record(updated);
+    ASSERT_TRUE(upd.ok()) << upd.error().what();
+    EXPECT_EQ(upd.value().id, id);
+    EXPECT_EQ(upd.value().created_at, original_ts);  // 关键：时间戳未变
+    EXPECT_EQ(upd.value().password, "cipher-blob");
+    EXPECT_EQ(upd.value().length, 10);
+    EXPECT_EQ(upd.value().iv.size(), 12u);
+    EXPECT_EQ(upd.value().tag.size(), 16u);
+
+    // 通过 list 再次确认持久化生效
+    auto list = engine.list_generated_records();
+    ASSERT_TRUE(list.ok());
+    ASSERT_EQ(list.value().size(), 1u);
+    EXPECT_EQ(list.value()[0].id, id);
+    EXPECT_EQ(list.value()[0].created_at, original_ts);
+    EXPECT_EQ(list.value()[0].password, "cipher-blob");
+}
+
+TEST(InMemoryStorageEngineTest, UpdateGeneratedRecordNotFound) {
+    pwdvault::storage::InMemoryStorageEngine engine;
+    pwdvault::core::GeneratedPasswordRecord r;
+    r.id = 9999;  // 不存在的 id
+    r.password = "x";
+    r.length = 1;
+    auto upd = engine.update_generated_record(r);
+    ASSERT_FALSE(upd.ok());
+    EXPECT_EQ(upd.error().code, pwdvault::core::ErrorCode::NotFound);
+}
+
+TEST(InMemoryStorageEngineTest, UpdateGeneratedRecordRejectsZeroId) {
+    pwdvault::storage::InMemoryStorageEngine engine;
+    auto added = engine.add_generated_record(make_gen_record("ok", 2));
+    ASSERT_TRUE(added.ok());
+
+    auto r = make_gen_record("zero-id", 7);
+    r.id = 0;  // 显式置 0
+    auto upd = engine.update_generated_record(r);
+    ASSERT_FALSE(upd.ok());
+    EXPECT_EQ(upd.error().code, pwdvault::core::ErrorCode::InvalidArgument);
+}
+
+TEST(InMemoryStorageEngineTest, RemoveGeneratedRecordNotFound) {
+    pwdvault::storage::InMemoryStorageEngine engine;
+    auto err = engine.remove_generated_record(9999);
+    ASSERT_FALSE(err.ok());
+    EXPECT_EQ(err.code, pwdvault::core::ErrorCode::NotFound);
+}
+
+TEST(InMemoryStorageEngineTest, ClearGeneratedRecordsRemovesAll) {
+    pwdvault::storage::InMemoryStorageEngine engine;
+    engine.add_generated_record(make_gen_record("a", 1));
+    engine.add_generated_record(make_gen_record("b", 2));
+    engine.add_generated_record(make_gen_record("c", 3));
+    auto list = engine.list_generated_records();
+    ASSERT_TRUE(list.ok());
+    EXPECT_EQ(list.value().size(), 3u);
+
+    EXPECT_TRUE(engine.clear_generated_records().ok());
+
+    auto list2 = engine.list_generated_records();
+    ASSERT_TRUE(list2.ok());
+    EXPECT_TRUE(list2.value().empty());
+}
+
+// ===========================================================================
+// InMemoryStorageEngine：settings KV
+// ===========================================================================
+
+TEST(InMemoryStorageEngineTest, SetAndGetSettingRoundTrip) {
+    pwdvault::storage::InMemoryStorageEngine engine;
+    EXPECT_TRUE(engine.set_setting("generator.history_limit", "20").ok());
+    auto v = engine.get_setting("generator.history_limit");
+    ASSERT_TRUE(v.ok());
+    EXPECT_EQ(*v, "20");
+}
+
+TEST(InMemoryStorageEngineTest, GetSettingMissingKeyReturnsEmpty) {
+    pwdvault::storage::InMemoryStorageEngine engine;
+    auto v = engine.get_setting("nonexistent.key");
+    ASSERT_TRUE(v.ok());
+    EXPECT_TRUE(v->empty());
+}
+
+TEST(InMemoryStorageEngineTest, SetSettingOverwritesExistingValue) {
+    pwdvault::storage::InMemoryStorageEngine engine;
+    engine.set_setting("generator.history_limit", "10");
+    engine.set_setting("generator.history_limit", "50");
+    auto v = engine.get_setting("generator.history_limit");
+    ASSERT_TRUE(v.ok());
+    EXPECT_EQ(*v, "50");
+}
+
+TEST(InMemoryStorageEngineTest, SetSettingEmptyValueDeletesKey) {
+    // 空值在 InMemory / SQLite 实现中均视为删除
+    pwdvault::storage::InMemoryStorageEngine engine;
+    engine.set_setting("generator.history_limit", "20");
+    engine.set_setting("generator.history_limit", "");
+    auto v = engine.get_setting("generator.history_limit");
+    ASSERT_TRUE(v.ok());
+    EXPECT_TRUE(v->empty());
+}
+
+// ===========================================================================
+// StorageEngine SQLite：生成器记录持久化
+// ===========================================================================
+
+TEST(StorageEngineSqliteTest, GeneratedRecordRoundTripSqlite) {
+    pwdvault::storage::StorageEngine engine(std::filesystem::path{":memory:"});
+
+    pwdvault::core::GeneratedPasswordRecord r;
+    r.password = std::string("enc\0data", 8);  // 含 0 字节，验证 BLOB 安全
+    r.length = 8;
+    r.iv = pwdvault::core::ByteVec(12, pwdvault::core::ByteVec::value_type{0xAA});
+    r.tag = pwdvault::core::ByteVec(16, pwdvault::core::ByteVec::value_type{0xBB});
+
+    auto added = engine.add_generated_record(r);
+    ASSERT_TRUE(added.ok()) << added.error().what();
+    EXPECT_GT(added.value().id, 0);
+
+    auto list = engine.list_generated_records();
+    ASSERT_TRUE(list.ok()) << list.error().what();
+    ASSERT_EQ(list.value().size(), 1u);
+    // 注意：list 返回顺序为最新在前
+    const auto& got = list.value()[0];
+    EXPECT_EQ(got.password, r.password);
+    EXPECT_EQ(got.iv, r.iv);
+    EXPECT_EQ(got.tag, r.tag);
+    EXPECT_EQ(got.length, r.length);
+    EXPECT_GT(got.created_at, 0);
+}
+
+TEST(StorageEngineSqliteTest, GeneratedRecordRemoveAndClearSqlite) {
+    pwdvault::storage::StorageEngine engine(std::filesystem::path{":memory:"});
+
+    auto a1 = engine.add_generated_record(make_gen_record("p1", 2));
+    auto a2 = engine.add_generated_record(make_gen_record("p2", 2));
+    ASSERT_TRUE(a1.ok() && a2.ok());
+
+    // 单条删除
+    EXPECT_TRUE(engine.remove_generated_record(a1.value().id).ok());
+    auto list = engine.list_generated_records();
+    ASSERT_TRUE(list.ok());
+    ASSERT_EQ(list.value().size(), 1u);
+    EXPECT_EQ(list.value()[0].password, "p2");
+
+    // 清空
+    EXPECT_TRUE(engine.clear_generated_records().ok());
+    auto list2 = engine.list_generated_records();
+    ASSERT_TRUE(list2.ok());
+    EXPECT_TRUE(list2.value().empty());
+}
+
+TEST(StorageEngineSqliteTest, GeneratedRecordUpdatePreservesCreatedAtSqlite) {
+    pwdvault::storage::StorageEngine engine(std::filesystem::path{":memory:"});
+
+    pwdvault::core::GeneratedPasswordRecord r;
+    r.password = "plain-pwd";
+    r.length = 9;
+    // 明文模式 iv/tag 为空
+    auto added = engine.add_generated_record(r);
+    ASSERT_TRUE(added.ok()) << added.error().what();
+    const int64_t id = added.value().id;
+    const int64_t original_ts = added.value().created_at;
+    ASSERT_GT(original_ts, 0);
+
+    // 模拟 enable_program_password 重加密：password/iv/tag 全变，length 不变
+    pwdvault::core::GeneratedPasswordRecord updated = added.value();
+    updated.password = std::string("enc\0blob", 8);  // 含 0 字节验证 BLOB 安全
+    updated.iv = pwdvault::core::ByteVec(12, pwdvault::core::ByteVec::value_type{0xAA});
+    updated.tag = pwdvault::core::ByteVec(16, pwdvault::core::ByteVec::value_type{0xBB});
+
+    auto upd = engine.update_generated_record(updated);
+    ASSERT_TRUE(upd.ok()) << upd.error().what();
+    EXPECT_EQ(upd.value().id, id);
+    EXPECT_EQ(upd.value().created_at, original_ts);  // 关键：时间戳未变
+    EXPECT_EQ(upd.value().password, updated.password);
+    EXPECT_EQ(upd.value().iv, updated.iv);
+    EXPECT_EQ(upd.value().tag, updated.tag);
+
+    // 重新查库验证
+    auto list = engine.list_generated_records();
+    ASSERT_TRUE(list.ok());
+    ASSERT_EQ(list.value().size(), 1u);
+    EXPECT_EQ(list.value()[0].id, id);
+    EXPECT_EQ(list.value()[0].created_at, original_ts);
+    EXPECT_EQ(list.value()[0].password, updated.password);
+    EXPECT_EQ(list.value()[0].iv, updated.iv);
+    EXPECT_EQ(list.value()[0].tag, updated.tag);
+}
+
+TEST(StorageEngineSqliteTest, GeneratedRecordUpdateNotFoundSqlite) {
+    pwdvault::storage::StorageEngine engine(std::filesystem::path{":memory:"});
+    pwdvault::core::GeneratedPasswordRecord r;
+    r.id = 4242;  // 不存在
+    r.password = "x";
+    r.length = 1;
+    auto upd = engine.update_generated_record(r);
+    ASSERT_FALSE(upd.ok());
+    EXPECT_EQ(upd.error().code, pwdvault::core::ErrorCode::NotFound);
+}
+
+TEST(StorageEngineSqliteTest, SettingsKvSqliteRoundTrip) {
+    pwdvault::storage::StorageEngine engine(std::filesystem::path{":memory:"});
+
+    EXPECT_TRUE(engine.set_setting("generator.history_limit", "100").ok());
+    auto v = engine.get_setting("generator.history_limit");
+    ASSERT_TRUE(v.ok());
+    EXPECT_EQ(*v, "100");
+
+    // 覆盖
+    engine.set_setting("generator.history_limit", "20");
+    auto v2 = engine.get_setting("generator.history_limit");
+    ASSERT_TRUE(v2.ok());
+    EXPECT_EQ(*v2, "20");
+
+    // 空值视为删除
+    engine.set_setting("generator.history_limit", "");
+    auto v3 = engine.get_setting("generator.history_limit");
+    ASSERT_TRUE(v3.ok());
+    EXPECT_TRUE(v3->empty());
+}
