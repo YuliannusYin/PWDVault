@@ -10,7 +10,6 @@
 #include <QWidget>
 
 class QCheckBox;
-class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QProgressBar;
@@ -38,6 +37,8 @@ private slots:
 private:
     void build_ui();
     void update_strength(const QString& password);
+    /// 统一更新 strength_label_ 文本与 cssClass（触发 QSS 重新评估）。
+    void set_strength_label(const QString& text, const QString& css_class);
 
     IpcClient* client_;
 

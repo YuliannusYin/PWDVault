@@ -2,17 +2,20 @@
 // =============================================================================
 // UnlockView.h
 //
-// PwdVault 解锁视图。仅在程序密码已启用且密码库处于锁定状态时显示。
-// 用户输入程序密码后调用 client->unlock(password)，成功后 emit unlock_succeeded()。
+// PwdVault 解锁视图（新设计）。380px 居中卡片：
+//   - 盾牌图标
+//   - 标题「PwdVault」+ 副标题「输入程序密码以解锁保险库」
+//   - 密码输入框（带 lock 图标前缀 + 可见性切换图标按钮）
+//   - 提示行：盾牌图标 + 「连续 5 次失败将锁定 5 分钟」+ 右侧「剩余尝试 5/5」
+//   - 解锁按钮（满宽 primary）
+//   - 底部分隔线 + 「本地加密 · AES-256-GCM · Argon2id」
 //
-// 程序密码未启用时（明文模式）由 MainWindow 直接进入主界面，不会显示本视图。
-// 启用程序密码、修改程序密码、禁用程序密码的入口位于 SettingsView。
+// 模态遮罩：以独立 QWidget 全屏覆盖父窗口实现（避免 QDialog 风格差异）。
 // =============================================================================
 #pragma once
 
 #include <QWidget>
 
-class QCheckBox;
 class QCloseEvent;
 class QLabel;
 class QLineEdit;
@@ -29,34 +32,39 @@ public:
     ~UnlockView() override;
 
 signals:
-    /// 解锁成功时触发。MainWindow 收到后关闭本视图并显示主界面。
+    /// 解锁成功时触发。
     void unlock_succeeded();
 
-    /// 用户关闭对话框但未解锁成功时触发。MainWindow 收到后退出应用。
+    /// 用户关闭对话框但未解锁成功时触发。
     void rejected();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private slots:
-    void on_show_password_toggled(bool checked);
+    void on_visibility_toggled();
     void on_submit_clicked();
+    void on_password_changed(const QString& text);
 
 private:
+    void build_ui();
     void set_error(const QString& message);
+    void update_attempts_display();
 
     IpcClient* client_;
     bool unlock_succeeded_ = false;
+    int remaining_attempts_ = 5;
 
+    QLabel* shield_icon_label_ = nullptr;
     QLabel* title_label_ = nullptr;
-    QLabel* hint_label_ = nullptr;
+    QLabel* subtitle_label_ = nullptr;
     QLineEdit* password_edit_ = nullptr;
-    QCheckBox* show_password_check_ = nullptr;
+    QPushButton* visibility_btn_ = nullptr;
+    QLabel* attempts_label_ = nullptr;
     QPushButton* submit_button_ = nullptr;
     QLabel* error_label_ = nullptr;
-    QLabel* attempts_label_ = nullptr;
-
-    int remaining_attempts_ = 5;
+    bool password_visible_ = false;
 };
 
 }  // namespace pwdvault::ui

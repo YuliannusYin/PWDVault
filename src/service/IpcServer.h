@@ -7,7 +7,9 @@
 // 并发模型：
 //   - 监听线程使用 OVERLAPPED ConnectNamedPipe，等待连接事件或停止事件。
 //   - 每个客户端连接由独立工作线程处理，使用 OVERLAPPED ReadFile/WriteFile
-//     并通过 WaitForMultipleObjects 同时等待 I/O 事件、停止事件与 30s 超时。
+//     并通过 WaitForMultipleObjects 同时等待 I/O 事件与停止事件。
+//   - 读取使用 INFINITE 超时（客户端进程退出时管道立即断裂，无需空闲超时）；
+//     写入使用 30 秒超时，防止客户端不读取响应卡死工作线程。
 //   - stop() 通过 SetEvent(stop_event_) + CancelIoEx 唤醒所有阻塞的 I/O。
 //
 // 协议帧：

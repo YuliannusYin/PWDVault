@@ -11,10 +11,12 @@
 // =============================================================================
 #include "IpcClient.h"
 #include "MainWindow.h"
+#include "Theme.h"
 
 #include <QApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QIcon>
 #include <QMessageBox>
 #include <QProcess>
 #include <QString>
@@ -48,6 +50,12 @@ int main(int argc, char* argv[]) {
     QApplication::setApplicationName(QStringLiteral("PwdVault"));
     QApplication::setApplicationDisplayName(QStringLiteral("PwdVault"));
     QApplication::setOrganizationName(QStringLiteral("PwdVault"));
+    // 全局窗口图标：影响任务栏、标题栏、Alt+Tab 预览。
+    // QIcon 会按需自动缩放，保留原始宽高比，四周透明填充。
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/logo.png")));
+
+    // 加载持久化主题（dark / light qss），必须在 MainWindow 创建前调用
+    pwdvault::ui::Theme::load_initial_theme(&app);
 
     pwdvault::ui::IpcClient client;
 

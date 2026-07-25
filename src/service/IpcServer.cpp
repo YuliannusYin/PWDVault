@@ -58,7 +58,10 @@ std::wstring utf8_to_wide(std::string_view s) {
 }
 
 constexpr DWORD kPipeBufferSize = 64 * 1024;  // 64 KB
-constexpr DWORD kReadTimeoutMs = 30'000;       // 30 秒读超时
+// 写超时：若客户端不读取响应，30 秒后中止写入，避免工作线程被卡死。
+// 读取使用 INFINITE——命名管道在客户端进程退出时立即产生 ERROR_BROKEN_PIPE，
+// 无需空闲超时来检测死连接；空闲超时反而会断开正常的空闲长连接。
+constexpr DWORD kWriteTimeoutMs = 30'000;
 
 /// 构造一个 manual-reset 事件。
 HandlePtr create_manual_event() {
@@ -365,9 +368,12 @@ void IpcServer::client_loop(HANDLE client_handle) {
 
     while (running_.load()) {
         // 1. 读 16 字节 MessageHeader
+        //    读取使用 INFINITE 超时：UI 空闲时不发请求，服务端应耐心等待，
+        //    而非 30 秒后断开连接。客户端进程退出时管道立即断裂（ERROR_BROKEN_PIPE），
+        //    read_exact 会返回 false 并退出循环。
         protocol::MessageHeader header{};
         if (!read_exact(client_handle, &header, sizeof(header),
-                        io_event.get(), stop_event_, kReadTimeoutMs)) {
+                        io_event.get(), stop_event_, INFINITE)) {
             break;
         }
 
@@ -385,7 +391,7 @@ void IpcServer::client_loop(HANDLE client_handle) {
         core::ByteVec payload(parsed.payload_size);
         if (parsed.payload_size > 0) {
             if (!read_exact(client_handle, payload.data(), payload.size(),
-                            io_event.get(), stop_event_, kReadTimeoutMs)) {
+                            io_event.get(), stop_event_, INFINITE)) {
                 break;
             }
         }
@@ -404,15 +410,15 @@ void IpcServer::client_loop(HANDLE client_handle) {
         resp_header.request_id = parsed.request_id;
         resp_header.payload_size = static_cast<uint32_t>(response_payload.size());
 
-        // 6. 写响应 header + payload
+        // 6. 写响应 header + payload（写超时 30 秒，防止客户端不读取响应卡死线程）
         if (!write_exact(client_handle, &resp_header, sizeof(resp_header),
-                         io_event.get(), stop_event_, kReadTimeoutMs)) {
+                         io_event.get(), stop_event_, kWriteTimeoutMs)) {
             break;
         }
         if (!response_payload.empty()) {
             if (!write_exact(client_handle, response_payload.data(),
                              response_payload.size(),
-                             io_event.get(), stop_event_, kReadTimeoutMs)) {
+                             io_event.get(), stop_event_, kWriteTimeoutMs)) {
                 break;
             }
         }

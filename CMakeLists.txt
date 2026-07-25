@@ -20,7 +20,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(PwdVault
-    VERSION 0.1.0
+    VERSION 3.0.0
     DESCRIPTION "PwdVault - 模仿火绒安全软件架构的密码管理器"
     LANGUAGES CXX
 )
@@ -93,7 +93,7 @@ include(QtDeployment)        # windeployqt 封装
 # 6. 查找 Qt 6（Widgets、Network、Concurrent）
 #    需要 CMAKE_PREFIX_PATH 指向 Qt 6 安装目录（如 D:\Qt\6.x.x\msvc2022_64）
 # -----------------------------------------------------------------------------
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Concurrent Svg)
 
 # 强制 Qt 自动化工具（MOC/RCC/UIC）启用
 set(CMAKE_AUTOMOC ON)
@@ -110,7 +110,7 @@ find_package(SQLite3 REQUIRED)
 find_package(GTest REQUIRED)
 
 # 向父作用域暴露常用变量（供 src/ 子目录使用）
-set(PWDVAULT_QT_LIBS Qt6::Widgets Qt6::Network Qt6::Concurrent CACHE INTERNAL "Qt 6 链接库")
+set(PWDVAULT_QT_LIBS Qt6::Widgets Qt6::Network Qt6::Concurrent Qt6::Svg CACHE INTERNAL "Qt 6 链接库")
 
 # -----------------------------------------------------------------------------
 # 8. 启用测试

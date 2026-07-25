@@ -10,6 +10,8 @@ add_executable(pwdvault-ui WIN32
     main.cpp
     MainWindow.cpp
     IpcClient.cpp
+    Theme.cpp
+    IconKit.cpp
     views/UnlockView.cpp
     views/ProgramPasswordDialog.cpp
     views/PasswordBookView.cpp
@@ -17,6 +19,8 @@ add_executable(pwdvault-ui WIN32
     views/GeneratorView.cpp
     views/SettingsView.cpp
     views/EditEntryDialog.cpp
+    resources/resources.qrc
+    pwdvault-ui.rc      # Windows 应用程序图标资源（嵌入多尺寸 ICO）
 )
 target_include_directories(pwdvault-ui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
