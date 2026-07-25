@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>解锁 · PwdVault</title>
+    <style id="theme-vars">
+/* ═══════════════════════════════════════════════════════════════
+   PwdVault — Brand Design Tokens
+   视觉路线：自由品牌化（保险库气质）  强调色：信任蓝
+   主题：深浅双模式（默认深色，顶栏切换）
+   字体：Segoe UI Variable（Windows 桌面应用）
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 浅色主题（默认 :root） ── */
+:root {
+  --pv-background: #f5f8fc;
+  --pv-foreground: #0f1626;
+
+  --pv-card: #ffffff;
+  --pv-card-foreground: #0f1626;
+
+  --pv-popover: #ffffff;
+  --pv-popover-foreground: #0f1626;
+
+  --pv-sidebar: #ffffff;
+  --pv-sidebar-foreground: #0f1626;
+  --pv-sidebar-border: #e6ebf3;
+
+  --pv-primary: #2f5fff;
+  --pv-primary-foreground: #ffffff;
+
+  --pv-muted: #eef2f8;
+  --pv-muted-foreground: #5c6678;
+
+  --pv-border: #e2e8f2;
+  --pv-input: #ffffff;
+  --pv-ring: #2f5fff;
+
+  /* 选中态/悬停态：仅用主色透明度，不引入第二品牌色相 */
+  --pv-accent: rgba(47, 95, 255, 0.10);
+  --pv-accent-strong: rgba(47, 95, 255, 0.16);
+  --pv-accent-foreground: #0f1626;
+
+  /* 语义状态色（仅用于真实状态） */
+  --pv-success: #1f9d57;
+  --pv-success-foreground: #ffffff;
+  --pv-success-soft: rgba(31, 157, 87, 0.12);
+  --pv-warning: #c9820a;
+  --pv-warning-foreground: #ffffff;
+  --pv-warning-soft: rgba(201, 130, 10, 0.12);
+  --pv-error: #dc2626;
+  --pv-error-foreground: #ffffff;
+  --pv-error-soft: rgba(220, 38, 38, 0.12);
+  --pv-info: #2f5fff;
+  --pv-info-soft: rgba(47, 95, 255, 0.12);
+
+  /* 圆角 */
+  --pv-radius-sm: 6px;
+  --pv-radius-md: 8px;
+  --pv-radius-lg: 12px;
+  --pv-radius-full: 9999px;
+
+  /* 字体 */
+  --pv-font-sans: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system,
+    "Helvetica Neue", Arial, sans-serif;
+  --pv-font-mono: "Cascadia Code", "SFMono-Regular", "Consolas", monospace;
+
+  /* 阴影：浮层（弹窗/下拉/抽屉）专用，静态卡片用边框分层 */
+  --pv-shadow-popover: 0 8px 24px -6px rgba(15, 22, 38, 0.18),
+    0 2px 8px -2px rgba(15, 22, 38, 0.08);
+  --pv-shadow-overlay: 0 24px 56px -12px rgba(15, 22, 38, 0.32),
+    0 8px 24px -8px rgba(15, 22, 38, 0.16);
+
+  /* 尺寸 */
+  --pv-sidebar-width: 232px;
+  --pv-topbar-height: 56px;
+}
+
+/* ── 深色主题（保险库氛围，<html class="dark">） ── */
+.dark {
+  --pv-background: #0a0e1a;
+  --pv-foreground: #e8ecf4;
+
+  --pv-card: #121829;
+  --pv-card-foreground: #e8ecf4;
+
+  --pv-popover: #161e33;
+  --pv-popover-foreground: #e8ecf4;
+
+  --pv-sidebar: #0d1322;
+  --pv-sidebar-foreground: #e8ecf4;
+  --pv-sidebar-border: #1e2740;
+
+  --pv-primary: #3b6bff;
+  --pv-primary-foreground: #ffffff;
+
+  --pv-muted: #1a2238;
+  --pv-muted-foreground: #8b95a8;
+
+  --pv-border: #232c44;
+  --pv-input: #1a2238;
+  --pv-ring: #3b6bff;
+
+  --pv-accent: rgba(59, 107, 255, 0.16);
+  --pv-accent-strong: rgba(59, 107, 255, 0.24);
+  --pv-accent-foreground: #e8ecf4;
+
+  --pv-success: #2bd576;
+  --pv-success-foreground: #06281a;
+  --pv-success-soft: rgba(43, 213, 118, 0.14);
+  --pv-warning: #f0a93c;
+  --pv-warning-foreground: #2a1a02;
+  --pv-warning-soft: rgba(240, 169, 60, 0.14);
+  --pv-error: #f56363;
+  --pv-error-foreground: #2a0808;
+  --pv-error-soft: rgba(245, 99, 99, 0.14);
+  --pv-info: #3b6bff;
+  --pv-info-soft: rgba(59, 107, 255, 0.16);
+
+  --pv-shadow-popover: 0 8px 24px -6px rgba(0, 0, 0, 0.55),
+    0 2px 8px -2px rgba(0, 0, 0, 0.4);
+  --pv-shadow-overlay: 0 24px 56px -12px rgba(0, 0, 0, 0.7),
+    0 8px 24px -8px rgba(0, 0, 0, 0.5);
+}
+
+/* ── 基础排版 ── */
+html,
+body {
+  font-family: var(--pv-font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 滚动条：贴合桌面应用，纤细低调 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--pv-border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--pv-border);
+  border-radius: var(--pv-radius-full);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 主题切换微动画 */
+.theme-anim,
+.theme-anim * {
+  transition: background-color 0.18s ease, border-color 0.18s ease,
+    color 0.18s ease;
+}
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--pv-background);
+    --color-foreground: var(--pv-foreground);
+    --color-card: var(--pv-card);
+    --color-card-foreground: var(--pv-card-foreground);
+    --color-popover: var(--pv-popover);
+    --color-popover-foreground: var(--pv-popover-foreground);
+    --color-primary: var(--pv-primary);
+    --color-primary-foreground: var(--pv-primary-foreground);
+    --color-muted: var(--pv-muted);
+    --color-muted-foreground: var(--pv-muted-foreground);
+    --color-accent: var(--pv-accent);
+    --color-accent-foreground: var(--pv-accent-foreground);
+    --color-border: var(--pv-border);
+    --color-input: var(--pv-input);
+    --color-ring: var(--pv-ring);
+    --color-sidebar: var(--pv-sidebar);
+    --color-sidebar-foreground: var(--pv-sidebar-foreground);
+    --radius-sm: var(--pv-radius-sm);
+    --radius-md: var(--pv-radius-md);
+    --radius-lg: var(--pv-radius-lg);
+  }
+  @layer base {
+    body { background: var(--pv-background); color: var(--pv-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--pv-background); }
+      .text-background { color: var(--pv-background); }
+      .border-background { border-color: var(--pv-background); }
+      .ring-background { --tw-ring-color: var(--pv-background); }
+      .bg-foreground { background-color: var(--pv-foreground); }
+      .text-foreground { color: var(--pv-foreground); }
+      .border-foreground { border-color: var(--pv-foreground); }
+      .ring-foreground { --tw-ring-color: var(--pv-foreground); }
+      .bg-card { background-color: var(--pv-card); }
+      .text-card { color: var(--pv-card); }
+      .border-card { border-color: var(--pv-card); }
+      .ring-card { --tw-ring-color: var(--pv-card); }
+      .bg-card-foreground { background-color: var(--pv-card-foreground); }
+      .text-card-foreground { color: var(--pv-card-foreground); }
+      .border-card-foreground { border-color: var(--pv-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--pv-card-foreground); }
+      .bg-popover { background-color: var(--pv-popover); }
+      .text-popover { color: var(--pv-popover); }
+      .border-popover { border-color: var(--pv-popover); }
+      .ring-popover { --tw-ring-color: var(--pv-popover); }
+      .bg-popover-foreground { background-color: var(--pv-popover-foreground); }
+      .text-popover-foreground { color: var(--pv-popover-foreground); }
+      .border-popover-foreground { border-color: var(--pv-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--pv-popover-foreground); }
+      .bg-primary { background-color: var(--pv-primary); }
+      .text-primary { color: var(--pv-primary); }
+      .border-primary { border-color: var(--pv-primary); }
+      .ring-primary { --tw-ring-color: var(--pv-primary); }
+      .bg-primary-foreground { background-color: var(--pv-primary-foreground); }
+      .text-primary-foreground { color: var(--pv-primary-foreground); }
+      .border-primary-foreground { border-color: var(--pv-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--pv-primary-foreground); }
+      .bg-muted { background-color: var(--pv-muted); }
+      .text-muted { color: var(--pv-muted); }
+      .border-muted { border-color: var(--pv-muted); }
+      .ring-muted { --tw-ring-color: var(--pv-muted); }
+      .bg-muted-foreground { background-color: var(--pv-muted-foreground); }
+      .text-muted-foreground { color: var(--pv-muted-foreground); }
+      .border-muted-foreground { border-color: var(--pv-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--pv-muted-foreground); }
+      .bg-accent { background-color: var(--pv-accent); }
+      .text-accent { color: var(--pv-accent); }
+      .border-accent { border-color: var(--pv-accent); }
+      .ring-accent { --tw-ring-color: var(--pv-accent); }
+      .bg-accent-foreground { background-color: var(--pv-accent-foreground); }
+      .text-accent-foreground { color: var(--pv-accent-foreground); }
+      .border-accent-foreground { border-color: var(--pv-accent-foreground); }
+      .ring-accent-foreground { --tw-ring-color: var(--pv-accent-foreground); }
+      .bg-border { background-color: var(--pv-border); }
+      .text-border { color: var(--pv-border); }
+      .border-border { border-color: var(--pv-border); }
+      .ring-border { --tw-ring-color: var(--pv-border); }
+      .bg-input { background-color: var(--pv-input); }
+      .text-input { color: var(--pv-input); }
+      .border-input { border-color: var(--pv-input); }
+      .ring-input { --tw-ring-color: var(--pv-input); }
+      .bg-ring { background-color: var(--pv-ring); }
+      .text-ring { color: var(--pv-ring); }
+      .border-ring { border-color: var(--pv-ring); }
+      .ring-ring { --tw-ring-color: var(--pv-ring); }
+      .bg-sidebar { background-color: var(--pv-sidebar); }
+      .text-sidebar { color: var(--pv-sidebar); }
+      .border-sidebar { border-color: var(--pv-sidebar); }
+      .ring-sidebar { --tw-ring-color: var(--pv-sidebar); }
+      .bg-sidebar-foreground { background-color: var(--pv-sidebar-foreground); }
+      .text-sidebar-foreground { color: var(--pv-sidebar-foreground); }
+      .border-sidebar-foreground { border-color: var(--pv-sidebar-foreground); }
+      .ring-sidebar-foreground { --tw-ring-color: var(--pv-sidebar-foreground); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased">
+    <main class="relative min-h-screen flex items-center justify-center overflow-hidden px-4">
+        <div aria-hidden="true" class="pointer-events-none absolute inset-0" style="background: radial-gradient(circle at 50% 35%, rgba(59,107,255,0.18), transparent 60%);"></div>
+        <div aria-hidden="true" class="pointer-events-none absolute inset-0" style="background-image: radial-gradient(circle, var(--pv-border) 1px, transparent 1px); background-size: 24px 24px; opacity: 0.5;"></div>
+        <section class="relative z-10 w-[380px] max-w-full bg-card border border-border rounded-lg p-9 shadow-[var(--pv-shadow-overlay)]">
+            <div class="flex justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--pv-primary)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    <path d="M10 11V9.5a2 2 0 0 1 4 0V11"/>
+                    <rect x="9" y="11" width="6" height="4.5" rx="0.8"/>
+                </svg>
+            </div>
+            <h1 class="mt-5 text-center font-semibold text-card-foreground" style="font-size:22px;letter-spacing:-0.01em;">PwdVault</h1>
+            <p class="mt-1 text-center text-muted-foreground" style="font-size:13px;">输入程序密码以解锁保险库</p>
+            <div class="relative mt-7">
+                <i data-lucide="lock" class="w-[18px] h-[18px] absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"></i>
+                <input data-dom-id="input-unlock-password" type="password" placeholder="程序密码" aria-label="程序密码" class="w-full h-11 pl-10 pr-10 bg-input border border-border rounded-md text-card-foreground placeholder:text-muted-foreground outline-none focus:ring-2 focus:ring-ring/40 transition" style="font-size:14px;" />
+                <button data-dom-id="toggle-unlock-visibility" type="button" aria-label="显示或隐藏密码" class="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-7 h-7 text-muted-foreground hover:text-card-foreground rounded-md focus:outline-none focus:ring-2 focus:ring-ring/40 transition">
+                    <i data-lucide="eye" class="w-[18px] h-[18px]"></i>
+                </button>
+            </div>
+            <div class="mt-3 flex items-center gap-2 text-muted-foreground" style="font-size:12px;">
+                <i data-lucide="shield-check" class="w-[14px] h-[14px] shrink-0"></i>
+                <span class="truncate">连续 5 次失败将锁定 5 分钟</span>
+                <span class="ml-auto tabular-nums whitespace-nowrap">剩余尝试 5/5</span>
+            </div>
+            <button data-dom-id="action-unlock" type="button" class="mt-5 w-full h-11 bg-primary text-primary-foreground rounded-md font-medium flex items-center justify-center gap-2 hover:brightness-110 active:brightness-95 focus:outline-none focus:ring-2 focus:ring-ring/40 transition" style="font-size:14px;">
+                <i data-lucide="lock-open" class="w-[18px] h-[18px]"></i>
+                <span>解锁</span>
+            </button>
+            <div class="mt-7 pt-5 border-t border-border flex items-center justify-center gap-1.5 text-muted-foreground" style="font-size:11px;">
+                <i data-lucide="shield" class="w-[12px] h-[12px]"></i>
+                <span class="whitespace-nowrap">本地加密 · AES-256-GCM · Argon2id</span>
+            </div>
+        </section>
+    </main>
+    <script>
+document.addEventListener('DOMContentLoaded',function(){
+  if(window.lucide){try{lucide.createIcons();}catch(e){}}
+  var b=document.querySelector('[data-dom-id="toggle-unlock-visibility"]');
+  var i=document.querySelector('[data-dom-id="input-unlock-password"]');
+  if(b&&i){b.addEventListener('click',function(){var pwd=i.type==='password';i.type=pwd?'text':'password';b.querySelector('[data-lucide]').setAttribute('data-lucide',pwd?'eye-off':'eye');if(window.lucide){try{lucide.createIcons();}catch(e){}}});}
+});
+    </script>
+</body>
+</html>

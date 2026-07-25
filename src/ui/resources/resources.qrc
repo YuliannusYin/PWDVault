@@ -1,0 +1,48 @@
+<!DOCTYPE RCC><RCC version="1.0">
+  <qresource prefix="/">
+    <file>dark.qss</file>
+    <file>light.qss</file>
+    <file>logo.png</file>
+    <file alias="icons/alert-circle.svg">icons/alert-circle.svg</file>
+    <file alias="icons/at-sign.svg">icons/at-sign.svg</file>
+    <file alias="icons/check.svg">icons/check.svg</file>
+    <file alias="icons/chevron-down.svg">icons/chevron-down.svg</file>
+    <file alias="icons/chevron-right.svg">icons/chevron-right.svg</file>
+    <file alias="icons/clock.svg">icons/clock.svg</file>
+    <file alias="icons/cloud.svg">icons/cloud.svg</file>
+    <file alias="icons/copy.svg">icons/copy.svg</file>
+    <file alias="icons/database.svg">icons/database.svg</file>
+    <file alias="icons/eraser.svg">icons/eraser.svg</file>
+    <file alias="icons/external-link.svg">icons/external-link.svg</file>
+    <file alias="icons/eye.svg">icons/eye.svg</file>
+    <file alias="icons/eye-off.svg">icons/eye-off.svg</file>
+    <file alias="icons/file-plus-2.svg">icons/file-plus-2.svg</file>
+    <file alias="icons/folder-open.svg">icons/folder-open.svg</file>
+    <file alias="icons/github.svg">icons/github.svg</file>
+    <file alias="icons/globe.svg">icons/globe.svg</file>
+    <file alias="icons/info.svg">icons/info.svg</file>
+    <file alias="icons/key.svg">icons/key.svg</file>
+    <file alias="icons/key-round.svg">icons/key-round.svg</file>
+    <file alias="icons/lock.svg">icons/lock.svg</file>
+    <file alias="icons/lock-open.svg">icons/lock-open.svg</file>
+    <file alias="icons/mail.svg">icons/mail.svg</file>
+    <file alias="icons/minus.svg">icons/minus.svg</file>
+    <file alias="icons/moon.svg">icons/moon.svg</file>
+    <file alias="icons/palette.svg">icons/palette.svg</file>
+    <file alias="icons/pencil.svg">icons/pencil.svg</file>
+    <file alias="icons/plus.svg">icons/plus.svg</file>
+    <file alias="icons/refresh-cw.svg">icons/refresh-cw.svg</file>
+    <file alias="icons/save.svg">icons/save.svg</file>
+    <file alias="icons/search.svg">icons/search.svg</file>
+    <file alias="icons/server.svg">icons/server.svg</file>
+    <file alias="icons/settings.svg">icons/settings.svg</file>
+    <file alias="icons/settings-2.svg">icons/settings-2.svg</file>
+    <file alias="icons/shield.svg">icons/shield.svg</file>
+    <file alias="icons/shield-check.svg">icons/shield-check.svg</file>
+    <file alias="icons/shield-off.svg">icons/shield-off.svg</file>
+    <file alias="icons/sun.svg">icons/sun.svg</file>
+    <file alias="icons/trash-2.svg">icons/trash-2.svg</file>
+    <file alias="icons/wand-2.svg">icons/wand-2.svg</file>
+    <file alias="icons/x.svg">icons/x.svg</file>
+  </qresource>
+</RCC>

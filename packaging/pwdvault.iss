@@ -17,7 +17,7 @@
 ; ============================================================================
 
 #define MyAppName "PwdVault"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "3.0.0"
 #define MyAppPublisher "PwdVault Project"
 #define MyAppExeName "pwdvault-ui.exe"
 #define MyAppServiceName "pwdvault-service.exe"

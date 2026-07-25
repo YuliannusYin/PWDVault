@@ -187,7 +187,7 @@ ServiceCore 中 add_entry/update_entry 的加密逻辑重复，
 - **MINOR**：向后兼容的功能新增
 - **PATCH**：向后兼容的 Bug 修复
 
-当前版本：`0.1.0`（0.x.y 阶段表示尚未稳定，任何版本都可能有破坏性变更）
+当前版本：`3.0.0`（详见 [Releases](https://github.com/YuliannusYin/PWDVault/releases)）
 
 ### 4.2 版本号位置
 

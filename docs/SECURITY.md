@@ -213,8 +213,13 @@ while (!g_should_exit.load()) {
 ### 6.3 请求超时
 
 - **客户端**：`IpcClient` 每个请求最多等待 10 秒，超时返回 `IpcError`。
-- **服务端**：`IpcServer::client_loop` 使用 `WaitForMultipleObjects` 同时等待 I/O 事件、
-  停止事件与 30 秒超时，避免单个客户端卡死整个工作线程。
+- **服务端**：`IpcServer::client_loop` 区分读写超时策略：
+  - **读取**：使用 `INFINITE` 超时。命名管道在客户端进程退出时立即产生
+    `ERROR_BROKEN_PIPE`，无需空闲超时检测死连接；空闲超时反而会断开正常的
+    空闲长连接（如用户查看密码时 UI 30 秒内不发请求）。
+  - **写入**：30 秒超时，防止客户端不读取响应卡死工作线程。
+  - 两者均通过 `WaitForMultipleObjects` 同时等待 I/O 事件与停止事件，
+    `stop()` 可经 `CancelIoEx` 唤醒任何阻塞的 I/O。
 
 ## 7. 已知限制
 

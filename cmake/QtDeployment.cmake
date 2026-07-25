@@ -141,6 +141,23 @@ function(deploy_qt_runtime target)
             VERBATIM
         )
         message(STATUS "deploy_qt_runtime: 已为 ${target} 注册 POST_BUILD platforms 插件复制")
+
+        # 复制 SVG imageformat 插件（qsvg.dll）：UI 用大量 SVG 图标，
+        # QIcon 加载 :/icons/*.svg 走 QImageReader 插件机制，缺此 dll
+        # 时所有 SVG 图标都不显示（PNG 如 logo.png 不受影响，为内置格式）。
+        # 仅在 qtsvg 已安装时复制，避免对未启用 SVG 的目标报错。
+        if(EXISTS "${_qt_plugins_dir}/imageformats/qsvg.dll")
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "$<TARGET_FILE_DIR:${target}>/imageformats"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${_qt_plugins_dir}/imageformats/qsvg.dll"
+                        "$<TARGET_FILE_DIR:${target}>/imageformats/qsvg.dll"
+                COMMENT "deploy_qt_runtime: 复制 Qt SVG imageformat 插件到 $<TARGET_FILE_DIR:${target}>"
+                VERBATIM
+            )
+            message(STATUS "deploy_qt_runtime: 已为 ${target} 注册 POST_BUILD SVG imageformat 插件复制")
+        endif()
     else()
         message(WARNING "deploy_qt_runtime: 未找到 Qt 插件目录，${target} 运行时可能因缺少 platforms 插件失败。"
                         " 请检查 Qt 安装或 CMAKE_PREFIX_PATH。")
