@@ -133,7 +133,26 @@ encryption_key (32 字节, entry 加密用对称密钥)
 明文模式下不生成 `vault.meta`，无 KEK / encryption_key 派生过程，`entry.password` 直接以
 明文存储于 `vault.db`（iv/tag 列为空 BLOB）。
 
-详见 [ARCHITECTURE.md §5 程序密码与密钥层次结构](ARCHITECTURE.md#5-程序密码与密钥层次结构)。
+### 3.1 生成记录的加密同构
+
+`vault.db` 的 `generated_passwords` 表存储密码生成器历史记录，其加密管线与 `entries`
+表完全一致：
+
+- **加密模式**：`password` 字段用同一 `encryption_key` 经 AES-256-GCM 加密为
+  `[IV(12) || ciphertext || tag(16)]`，iv/tag/密码三段分别存于不同列。
+- **明文模式**：iv/tag 为空 BLOB，password 为明文。
+- **模式切换**：`EnableProgramPassword` / `DisableProgramPassword` 时，所有生成记录随
+  entry 一起被批量重加密 / 重解密。通过 `IStorageEngine::update_generated_record`
+  接口仅更新 password/iv/tag 字段，保留 id 与 created_at，避免丢失原始生成时间。
+
+这种「同构」设计带来两点安全收益：
+
+1. **统一保护强度**：生成记录与密码条目共享同一 `encryption_key`，不存在「弱保护」分支。
+2. **统一清零路径**：`encryption_key` 清零即同时切断 entry 与生成记录的解密能力，
+   `lock()` / 进程退出后两类数据均不可读。
+
+详见 [ARCHITECTURE.md §5 程序密码与密钥层次结构](ARCHITECTURE.md#5-程序密码与密钥层次结构)
+与 [IPC_PROTOCOL.md §3.4](IPC_PROTOCOL.md#34-密码生成与强度评估0x03xx)。
 
 ## 4. 敏感数据清零
 

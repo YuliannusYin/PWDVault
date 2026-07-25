@@ -186,10 +186,12 @@ message(STATUS "")
 #       cmake --build build --target package_inno    # 调用 iscc 生成 setup.exe
 # -----------------------------------------------------------------------------
 # 查找 Inno Setup 编译器（iscc.exe），找不到时仅给出提示，不阻断配置
+# 覆盖三种常见安装位置：系统级（Program Files）、用户级（%LOCALAPPDATA%）
 find_program(ISCC_EXECUTABLE
     NAMES iscc iscc.exe
     PATHS "C:/Program Files (x86)/Inno Setup 6"
           "C:/Program Files/Inno Setup 6"
+          "$ENV{LOCALAPPDATA}/Programs/Inno Setup 6"
     DOC "Inno Setup 编译器路径"
 )
 if(ISCC_EXECUTABLE)

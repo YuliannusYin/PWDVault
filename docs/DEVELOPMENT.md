@@ -213,14 +213,14 @@ ServiceCore 中 add_entry/update_entry 的加密逻辑重复，
 3. 更新 `docs/CHANGELOG.md`（若存在）或 Release Notes
 4. 提交版本号变更：
    ```powershell
-   git commit -m "chore: bump version to 3.0.0"
+   git commit -m "chore: bump version to 3.1.0"
    ```
 
 ### 5.2 打 tag
 
 ```powershell
-git tag -a v3.0.0 -m "Release v3.0.0"
-git push origin v3.0.0
+git tag -a v3.1.0 -m "Release v3.1.0"
+git push origin v3.1.0
 ```
 
 ### 5.3 构建安装包
@@ -245,15 +245,15 @@ cmake --install build --config Release --prefix build/install
 cmake --build build --target package_inno
 ```
 
-输出：`build/package/pwdvault-3.0.0-setup.exe`
+输出：`build/package/pwdvault-3.1.0-setup.exe`
 
 ### 5.4 发布到 GitHub Releases
 
 1. 在 GitHub 仓库页面点击「Releases」→「Draft a new release」
-2. 选择刚推送的 tag（如 `v3.0.0`）
-3. 填写 Release Title（如 `PwdVault 3.0.0`）
+2. 选择刚推送的 tag（如 `v3.1.0`）
+3. 填写 Release Title（如 `PwdVault 3.1.0`）
 4. 在描述中粘贴 Release Notes
-5. 上传 `pwdvault-3.0.0-setup.exe` 与 `pwdvault-3.0.0.zip`（便携版）
+5. 上传 `pwdvault-3.1.0-setup.exe` 与 `pwdvault-3.1.0-portable.zip`（便携版）
 6. 点击「Publish release」
 
 ### 5.5 发布后

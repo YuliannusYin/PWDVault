@@ -189,8 +189,11 @@ cmake --install build --config Release --prefix "C:\Program Files\PwdVault"
 ### 6.1 准备 Inno Setup
 
 1. 下载并安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)。
-2. 默认安装路径为 `C:\Program Files (x86)\Inno Setup 6\`，CMake 配置阶段会自动检测
-   `iscc.exe`。
+2. CMake 配置阶段会自动检测 `iscc.exe`，搜索路径覆盖三种常见安装位置：
+   - `C:\Program Files (x86)\Inno Setup 6\`（系统级 32 位默认）
+   - `C:\Program Files\Inno Setup 6\`（系统级 64 位）
+   - `%LOCALAPPDATA%\Programs\Inno Setup 6\`（用户级，如不勾选「所有用户」时）
+3. 若安装在其他路径，请将 `iscc.exe` 所在目录加入 `PATH` 环境变量。
 
 ### 6.2 构建安装包
 

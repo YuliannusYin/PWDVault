@@ -249,18 +249,38 @@ PwdVault 支持两种工作模式：
 1. 调用 `ProgramPasswordStore::initialize`：生成 salt + KEK + encryption_key，写入 vault.meta
 2. ServiceCore 设置 `encryption_key`，切换到加密模式
 3. 遍历所有现有明文条目，逐条用 AES-256-GCM 加密后 update
-4. 任一步骤失败：回滚（删除 vault.meta，恢复明文条目）
+4. 同步重新加密所有生成记录（`generated_passwords` 表）——通过
+   `IStorageEngine::update_generated_record` 仅更新 password/iv/tag 字段，
+   保留 id 与 created_at 不变（避免丢失原始生成时间）
+5. 任一步骤失败：回滚（删除 vault.meta，恢复明文条目与记录）
 
 **DisableProgramPassword（加密 → 明文）**：
 1. 用提供的程序密码验证身份（解锁状态）
 2. 遍历所有加密条目，逐条解密为明文后 update（iv/tag 清空）
-3. 调用 `ProgramPasswordStore::destroy` 删除 vault.meta
-4. 切换到明文模式，`unlocked=true`
+3. 同步重新解密所有生成记录——同样走 `update_generated_record`，保留 created_at
+4. 调用 `ProgramPasswordStore::destroy` 删除 vault.meta
+5. 切换到明文模式，`unlocked=true`
 
 **ChangeProgramPassword（仅加密模式）**：
 1. 验证 old_password
 2. 调用 `ProgramPasswordStore::change_password`：用新密码重新派生 KEK，重新包装 encryption_key
-3. encryption_key 本身不变，**条目无需重新加密**
+3. encryption_key 本身不变，**条目与生成记录无需重新加密**
+
+### 生成记录与设置存储
+
+除 `entries` 表外，`vault.db` 还包含两张辅助表：
+
+- **`generated_passwords`**：保存密码生成器历史记录。字段与 `entries` 同构
+  （id / password BLOB / length / iv / tag / created_at）。`generate_password`
+  成功后 service 自动追加一条记录；通过 `set_generator_limit` 配置上限后
+  立即按 `created_at DESC, id DESC` 保留最新 N 条，其余删除（`limit=0` 表示无限制）。
+- **`settings`**：通用 KV 配置表（key TEXT PRIMARY KEY, value TEXT）。当前用于
+  持久化生成器历史记录上限（key=`generator.limit`），未来可扩展承载其他用户偏好。
+
+加密约定：生成记录的 password 字段在加密模式下用 `entry_crypto_` 加密为
+`[IV(12) || ciphertext || tag(16)]`，与 `entry.password` 同构；明文模式下
+iv / tag 为空、password 为明文 BLOB。详见
+[IPC_PROTOCOL.md 第 3.4 节](IPC_PROTOCOL.md#34-密码生成与强度评估0x03xx)。
 
 ## 6. 安全设计
 
@@ -317,6 +337,26 @@ PwdVault 支持两种工作模式：
 2. 在 `src/ui/CMakeLists.txt` 中将新源文件加入 `pwdvault-ui` 目标。
 3. 在 `MainWindow` 中添加对应 Tab/侧边栏入口。
 4. 视图通过 `IpcClient` 与 service 通信，不直接持有引擎实现。
+
+### 7.4 UI 强度展示集中化
+
+`src/ui/StrengthUtil.h` / `.cpp` 集中管理 `core::StrengthLevel` → UI 属性的映射，
+所有展示强度的视图（GeneratorView / InputView / PasswordBookView / EditEntryDialog /
+ProgramPasswordDialog）必须通过 `StrengthUtil` 获取：
+
+| 函数                      | 用途                                |
+|---------------------------|-------------------------------------|
+| `strength_text`           | 等级中文文案（极弱/弱/中/强/极强） |
+| `strength_qss_key`        | 强度条 QSS 属性值（veryweak 等）    |
+| `strength_color`          | 颜色 hex                            |
+| `strength_label_class`    | 文本标签 cssClass（error/info 等）  |
+| `strength_badge_class`    | badge cssClass（badgeSuccess 等）   |
+| `strength_segments`       | 进度条点亮段数（0..4）              |
+
+新增展示强度的 UI 控件时，**不要**在各视图内硬编码阈值判断，统一调用本工具函数。
+QSS 中 5 级 cssClass（`error`/`warning`/`info`/`success`/`veryStrong`）与
+`QProgressBar[strength="..."]` 属性选择器必须在 `dark.qss` 与 `light.qss` 双主题
+同步定义。
 
 ## 8. 相关文档
 
