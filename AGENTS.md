@@ -41,17 +41,18 @@ PwdVault/
 │   │   ├── main.cpp            # Qt 入口（拉起 service）
 │   │   ├── MainWindow.cpp      # 主窗口与侧边栏
 │   │   ├── IpcClient.cpp       # 命名管道客户端
-│   │   └── views/              # 5 个功能视图 + 2 个对话框
+│   │   ├── StrengthUtil.cpp    # 密码强度等级 → UI 属性集中映射
+│   │   └── views/              # 5 个功能视图 + 3 个对话框
 │   └── migrate/                # 旧 Python 数据迁移工具
 │       ├── main.cpp            # CLI 入口
 │       ├── FernetDecoder.cpp   # Fernet token 解密
 │       └── Base64.cpp          # URL-safe base64 解码
 ├── tests/                      # GoogleTest 单元/集成测试
 │   ├── crypto/                 # 加密引擎测试（19 用例）
-│   ├── storage/                # 存储引擎测试（16 用例）
-│   ├── generator/              # 生成器测试（11 用例）
-│   ├── protocol/               # 协议序列化测试（27 用例）
-│   ├── integration/            # 端到端流程测试（18 用例）
+│   ├── storage/                # 存储引擎测试（21 用例）
+│   ├── generator/              # 生成器测试（15 用例）
+│   ├── protocol/               # 协议序列化测试（28 用例）
+│   ├── integration/            # 端到端流程测试（19 用例）
 │   └── migrate/                # Fernet 解码测试（17 用例）
 ├── docs/                       # 设计文档（见下文导航）
 ├── legacy-python/              # 原 Python + Tkinter 实现（归档，只读参考）
@@ -185,12 +186,14 @@ Qt 6 Widgets GUI 程序，不持有任何敏感数据，所有操作通过 IPC �
 | `main.cpp`                     | Qt 入口、首次启动拉起 service、连接重试    |
 | `MainWindow.cpp`               | 主窗口（侧边栏 + QStackedWidget）、GetVaultStatus 启动流程（明文直接进入 / 加密显示解锁）、重连流程 |
 | `IpcClient.cpp`                | 命名管道客户端（同步调用，10 秒超时，4 次重试） |
+| `StrengthUtil.cpp`             | 密码强度等级 → UI 属性（文本/颜色/cssClass/段数）集中映射，5 个视图共用 |
 | `views/UnlockView.cpp`         | 解锁视图（加密模式下输入程序密码解锁；明文模式下不显示） |
 | `views/ProgramPasswordDialog.cpp` | 程序密码管理对话框（启用 / 禁用 / 修改三种模式） |
 | `views/PasswordBookView.cpp`   | 密码本（列表、搜索、详情、编辑、删除、复制密码） |
 | `views/InputView.cpp`          | 录入视图                                   |
 | `views/GeneratorView.cpp`      | 生成器视图（参数配置 + 强度条）            |
-| `views/SettingsView.cpp`       | 设置视图（版本信息、锁定、关于）          |
+| `views/SettingsView.cpp`       | 设置视图（版本信息、程序密码、生成器历史记录、锁定、关于） |
+| `views/GeneratorHistoryDialog.cpp` | 生成器历史记录对话框（表格展示、复制、删除单条、清空、显示/隐藏密码切换） |
 | `views/EditEntryDialog.cpp`    | 编辑条目对话框（模态）                     |
 
 ### 迁移工具（`src/migrate/`）
