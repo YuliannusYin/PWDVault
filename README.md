@@ -48,7 +48,7 @@ PwdVault 帮助你安全地存储和管理各类账号密码。与传统云端�
 
 ### 方式一：下载安装包（推荐）
 
-1. 前往 [Releases 页面](https://github.com/yourusername/PWDVault/releases)（待发布）
+1. 前往 [Releases 页面](https://github.com/YuliannusYin/PWDVault/releases)（待发布）
 2. 下载最新的 `pwdvault-<version>-setup.exe`
 3. 双击运行安装程序，按提示完成安装
 4. 安装完成后，从开始菜单或桌面快捷方式启动 PwdVault
@@ -177,7 +177,7 @@ PwdVault 的所有数据保存在以下位置：
 
 由于 PwdVault 使用加密与命名管道通信，少数杀毒软件可能误报。你可以：
 1. 将 PwdVault 安装目录加入杀毒软件白名单
-2. 从 [Releases 页面](https://github.com/yourusername/PWDVault/releases) 重新下载官方版本
+2. 从 [Releases 页面](https://github.com/YuliannusYin/PWDVault/releases) 重新下载官方版本
 3. 自行从源码构建以确认安全性
 
 ### 数据可以同步到手机吗？
@@ -196,7 +196,7 @@ PwdVault 的所有数据保存在以下位置：
 
 ## 反馈与支持
 
-- **问题反馈**：[GitHub Issues](https://github.com/yourusername/PWDVault/issues)
+- **问题反馈**：[GitHub Issues](https://github.com/YuliannusYin/PWDVault/issues)
 - **联系方式**：mry_2025@outlook.com
 - **贡献代码**：请参阅 [AGENTS.md](AGENTS.md) 了解开发指南
 

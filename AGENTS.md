@@ -41,7 +41,7 @@ PwdVault/
 │   │   ├── main.cpp            # Qt 入口（拉起 service）
 │   │   ├── MainWindow.cpp      # 主窗口与侧边栏
 │   │   ├── IpcClient.cpp       # 命名管道客户端
-│   │   └── views/              # 4 个功能视图 + 编辑对话框
+│   │   └── views/              # 5 个功能视图 + 2 个对话框
 │   └── migrate/                # 旧 Python 数据迁移工具
 │       ├── main.cpp            # CLI 入口
 │       ├── FernetDecoder.cpp   # Fernet token 解密
