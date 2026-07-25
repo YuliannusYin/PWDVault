@@ -27,9 +27,16 @@ public:
     virtual Result<std::string> generate(const PasswordGeneratorOptions& options) = 0;
 
     /// 估算密码强度。
+    ///
+    /// 评估流程：
+    ///   1. 基于字符集种类的纯熵估算（length × log2(pool_size)）
+    ///   2. 模式惩罚（重复字符 / 顺序序列 / 键盘序列 / 分布不均）
+    ///   3. 按惩罚后的 bits 计算等级（VeryWeak..VeryStrong）与 score（0..4）
+    ///
     /// \param password 待评估的密码
-    /// \return 估算熵值（单位 bits）；越大约安全
-    virtual int estimate_strength(const std::string& password) = 0;
+    /// \return StrengthEstimate，含 bits、level、score、warnings；
+    ///         空密码返回全 0 值且无 warnings
+    virtual StrengthEstimate estimate_strength(const std::string& password) = 0;
 };
 
 // 纯虚析构函数的定义：链接时需要（C++ 标准要求纯虚析构函数有定义）。

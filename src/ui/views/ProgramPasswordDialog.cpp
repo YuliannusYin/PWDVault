@@ -8,6 +8,7 @@
 #include "ProgramPasswordDialog.h"
 #include "IpcClient.h"
 #include "IconKit.h"
+#include "StrengthUtil.h"
 
 #include <QButtonGroup>
 #include <QCloseEvent>
@@ -30,30 +31,8 @@ namespace pwdvault::ui {
 
 namespace {
 
-/// 强度对应的 strength key：< 40 weak、40-80 medium、> 80 strong。
-QString strength_key(int bits) {
-    if (bits < 40) return QStringLiteral("weak");
-    if (bits < 80) return QStringLiteral("medium");
-    return QStringLiteral("strong");
-}
-
-/// 强度文本描述。
-QString strength_text(int bits) {
-    if (bits < 40) return QStringLiteral("弱");
-    if (bits < 80) return QStringLiteral("中");
-    return QStringLiteral("强");
-}
-
-/// 计算强度条填充段数（0-4）。
-int strength_segments(int bits) {
-    if (bits <= 0) return 0;
-    if (bits < 40) return 1;
-    if (bits < 80) return 2;
-    if (bits < 128) return 3;
-    return 4;
-}
-
 // 样式由 QSS 中对应的 cssClass 提供（inputField / inlineEdit / inlineIcon / inlineBtn）
+// 强度等级判定与文案统一通过 StrengthUtil 提供。
 
 }  // namespace
 
@@ -557,14 +536,14 @@ void ProgramPasswordDialog::on_submit_clicked() {
 void ProgramPasswordDialog::update_strength(const QString& password) {
     if (!strength_bar_ || !strength_label_ || !client_) return;
 
-    int bits = 0;
+    core::StrengthEstimate estimate;
     if (!password.isEmpty()) {
         auto result = client_->estimate_strength(password.toStdString());
-        if (result.ok()) bits = result.value().strength_bits;
+        if (result.ok()) estimate = result.value().estimate;
     }
 
-    const int seg_count = strength_segments(bits);
-    const QString key = strength_key(bits);
+    const int seg_count = password.isEmpty() ? 0 : strength_segments(estimate.level);
+    const QString key = strength_qss_key(estimate.level);
 
     // 找到 strength_bar_ 下的 4 个 QLabel 分段
     auto segs = strength_bar_->findChildren<QLabel*>();
@@ -585,14 +564,8 @@ void ProgramPasswordDialog::update_strength(const QString& password) {
         label_class = QStringLiteral("caption");
     } else {
         strength_label_->setText(
-            QStringLiteral("%1（%2 bit）").arg(strength_text(bits)).arg(bits));
-        if (bits < 40) {
-            label_class = QStringLiteral("error");
-        } else if (bits < 80) {
-            label_class = QStringLiteral("warning");
-        } else {
-            label_class = QStringLiteral("success");
-        }
+            QStringLiteral("%1（%2 bit）").arg(strength_text(estimate.level)).arg(estimate.bits));
+        label_class = strength_label_class(estimate.level);
     }
     strength_label_->setProperty("cssClass", label_class);
     strength_label_->style()->unpolish(strength_label_);

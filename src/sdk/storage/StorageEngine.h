@@ -68,6 +68,16 @@ public:
     core::Error commit_transaction() override;
     core::Error rollback_transaction() override;
 
+    core::Result<core::GeneratedPasswordRecord> add_generated_record(
+        const core::GeneratedPasswordRecord& record) override;
+    core::Result<core::GeneratedPasswordRecord> update_generated_record(
+        const core::GeneratedPasswordRecord& record) override;
+    core::Result<std::vector<core::GeneratedPasswordRecord>> list_generated_records() override;
+    core::Error remove_generated_record(int64_t id) override;
+    core::Error clear_generated_records() override;
+    core::Result<std::string> get_setting(const std::string& key) override;
+    core::Error set_setting(const std::string& key, const std::string& value) override;
+
 private:
     /// 自定义 deleter：封装 sqlite3_close_v2。
     struct SqliteDbDeleter {
@@ -93,6 +103,9 @@ private:
     /// 从当前 step 后的结果行读取一条 PasswordEntry。
     /// 调用方需保证 stmt 已 step 到 SQLITE_ROW。
     static core::PasswordEntry read_row(sqlite3_stmt* stmt);
+
+    /// 从当前 step 后的结果行读取一条 GeneratedPasswordRecord。
+    static core::GeneratedPasswordRecord read_generated_row(sqlite3_stmt* stmt);
 
     /// 将一个 BLOB 列读出为 ByteVec。
     static core::ByteVec read_blob_column(sqlite3_stmt* stmt, int col);

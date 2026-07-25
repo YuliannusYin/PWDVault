@@ -865,7 +865,7 @@ TEST_F(E2EFlowTest, GeneratePasswordAfterLockReturnsUnauthorized) {
     EXPECT_EQ(resp.error().code, core::ErrorCode::Unauthorized);
 }
 
-/// estimate_strength 对弱密码返回较低值，对强密码返回较高值。
+/// estimate_strength 对弱密码返回较低等级，对强密码返回较高等级。
 TEST_F(E2EFlowTest, EstimateStrengthOrdersWeakAndStrong) {
     enable_program_password();
 
@@ -875,8 +875,11 @@ TEST_F(E2EFlowTest, EstimateStrengthOrdersWeakAndStrong) {
         send<protocol::EstimateStrengthRequest, protocol::EstimateStrengthResponse>(
             protocol::CommandId::EstimateStrength, weak_req);
     ASSERT_TRUE(weak_resp.ok()) << weak_resp.error().what();
-    const int weak_bits = weak_resp.value().strength_bits;
-    EXPECT_GE(weak_bits, 0);
+    const auto& weak_est = weak_resp.value().estimate;
+    EXPECT_GE(weak_est.bits, 0);
+    EXPECT_EQ(weak_est.score, static_cast<int>(weak_est.level));
+    EXPECT_GE(static_cast<int>(weak_est.level),
+              static_cast<int>(core::StrengthLevel::VeryWeak));
 
     protocol::EstimateStrengthRequest strong_req;
     strong_req.password = "Very$tr0ng&P@ssw0rd!2024";
@@ -884,11 +887,318 @@ TEST_F(E2EFlowTest, EstimateStrengthOrdersWeakAndStrong) {
         send<protocol::EstimateStrengthRequest, protocol::EstimateStrengthResponse>(
             protocol::CommandId::EstimateStrength, strong_req);
     ASSERT_TRUE(strong_resp.ok()) << strong_resp.error().what();
-    const int strong_bits = strong_resp.value().strength_bits;
+    const auto& strong_est = strong_resp.value().estimate;
 
-    EXPECT_GT(strong_bits, weak_bits)
-        << "强密码 entropy=" << strong_bits
-        << " 应大于弱密码 entropy=" << weak_bits;
+    EXPECT_GT(strong_est.bits, weak_est.bits)
+        << "强密码 entropy=" << strong_est.bits
+        << " 应大于弱密码 entropy=" << weak_est.bits;
+    EXPECT_GE(static_cast<int>(strong_est.level),
+              static_cast<int>(weak_est.level));
+}
+
+// =============================================================================
+// 9b. 生成器历史记录
+// =============================================================================
+
+/// generate_password 应在生成密码后自动追加一条历史记录，list_generated_records 能取到。
+TEST_F(E2EFlowTest, GeneratePasswordAppendsHistoryRecord) {
+    enable_program_password();
+
+    protocol::GeneratePasswordRequest gen_req;
+    gen_req.options.length = 16;
+    gen_req.options.use_lowercase = true;
+    gen_req.options.use_digits = true;
+    auto gen_resp =
+        send<protocol::GeneratePasswordRequest, protocol::GeneratePasswordResponse>(
+            protocol::CommandId::GeneratePassword, gen_req);
+    ASSERT_TRUE(gen_resp.ok()) << gen_resp.error().what();
+    const std::string generated_pwd = gen_resp.value().password;
+    ASSERT_FALSE(generated_pwd.empty());
+
+    auto list_resp = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list_resp.ok()) << list_resp.error().what();
+    ASSERT_EQ(list_resp.value().records.size(), 1u);
+    const auto& rec = list_resp.value().records[0];
+    EXPECT_GT(rec.id, 0);
+    EXPECT_GT(rec.created_at, 0);
+    EXPECT_EQ(rec.password, generated_pwd);  // 解密后应恢复原文
+    EXPECT_EQ(rec.length, 16);
+    // 加密模式下 iv / tag 不为空（被解密后清空，故应为空）
+    EXPECT_TRUE(rec.iv.empty());
+    EXPECT_TRUE(rec.tag.empty());
+}
+
+/// 明文模式下生成的密码记录同样可被 list（明文存储，无 iv/tag）。
+TEST_F(E2EFlowTest, GeneratePasswordAppendsHistoryRecordInPlaintextMode) {
+    // 不启用程序密码 → 明文模式
+    protocol::GeneratePasswordRequest gen_req;
+    gen_req.options.length = 12;
+    gen_req.options.use_uppercase = true;
+    auto gen_resp =
+        send<protocol::GeneratePasswordRequest, protocol::GeneratePasswordResponse>(
+            protocol::CommandId::GeneratePassword, gen_req);
+    ASSERT_TRUE(gen_resp.ok()) << gen_resp.error().what();
+
+    auto list_resp = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list_resp.ok()) << list_resp.error().what();
+    ASSERT_EQ(list_resp.value().records.size(), 1u);
+    EXPECT_EQ(list_resp.value().records[0].length, 12);
+    // 明文模式下 iv / tag 在响应中应为空
+    EXPECT_TRUE(list_resp.value().records[0].iv.empty());
+    EXPECT_TRUE(list_resp.value().records[0].tag.empty());
+}
+
+/// 启用 / 禁用程序密码触发生成记录重加密 / 解密时，created_at 必须保持不变
+/// （回归测试：旧实现"先删后加"会重置 created_at 为当前时间）。
+TEST_F(E2EFlowTest, EnableDisableProgramPasswordPreservesGeneratedRecordTimestamp) {
+    // 1. 明文模式下生成一条记录，记录原始 created_at
+    protocol::GeneratePasswordRequest gen_req;
+    gen_req.options.length = 14;
+    gen_req.options.use_lowercase = true;
+    gen_req.options.use_digits = true;
+    auto gen_resp =
+        send<protocol::GeneratePasswordRequest, protocol::GeneratePasswordResponse>(
+            protocol::CommandId::GeneratePassword, gen_req);
+    ASSERT_TRUE(gen_resp.ok()) << gen_resp.error().what();
+    const std::string generated_pwd = gen_resp.value().password;
+
+    auto list_before = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list_before.ok()) << list_before.error().what();
+    ASSERT_EQ(list_before.value().records.size(), 1u);
+    const int64_t id = list_before.value().records[0].id;
+    const int64_t original_ts = list_before.value().records[0].created_at;
+    ASSERT_GT(original_ts, 0);
+
+    // 2. 启用程序密码 → 触发明文 → 密文重加密
+    enable_program_password();
+
+    // 3. 验证记录仍存在且 created_at 未被重置
+    auto list_after_enable = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list_after_enable.ok()) << list_after_enable.error().what();
+    ASSERT_EQ(list_after_enable.value().records.size(), 1u);
+    const auto& rec_after_enable = list_after_enable.value().records[0];
+    EXPECT_EQ(rec_after_enable.id, id);
+    EXPECT_EQ(rec_after_enable.created_at, original_ts) << "enable 后 created_at 不应被重置";
+    EXPECT_EQ(rec_after_enable.password, generated_pwd);  // 解密后恢复原文
+    EXPECT_EQ(rec_after_enable.length, 14);
+
+    // 4. 锁定 → 解锁，验证 created_at 在持久化后仍然不变
+    lock();
+    auto unlock_r = unlock(kTestProgramPassword);
+    ASSERT_TRUE(unlock_r.ok() && unlock_r.value().success) << unlock_r.error().what();
+
+    auto list_after_unlock = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list_after_unlock.ok()) << list_after_unlock.error().what();
+    ASSERT_EQ(list_after_unlock.value().records.size(), 1u);
+    EXPECT_EQ(list_after_unlock.value().records[0].id, id);
+    EXPECT_EQ(list_after_unlock.value().records[0].created_at, original_ts)
+        << "unlock 后 created_at 不应被重置";
+    EXPECT_EQ(list_after_unlock.value().records[0].password, generated_pwd);
+
+    // 5. 禁用程序密码 → 触发密文 → 明文重解密
+    protocol::DisableProgramPasswordRequest dis_req;
+    dis_req.password = kTestProgramPassword;
+    auto dis_resp = send<protocol::DisableProgramPasswordRequest,
+                         protocol::DisableProgramPasswordResponse>(
+        protocol::CommandId::DisableProgramPassword, dis_req);
+    ASSERT_TRUE(dis_resp.ok()) << dis_resp.error().what();
+    ASSERT_TRUE(dis_resp.value().success) << dis_resp.value().error_message;
+
+    // 6. 最终验证记录与时间戳仍然完好
+    auto list_after_disable = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list_after_disable.ok()) << list_after_disable.error().what();
+    ASSERT_EQ(list_after_disable.value().records.size(), 1u);
+    const auto& rec_after_disable = list_after_disable.value().records[0];
+    EXPECT_EQ(rec_after_disable.id, id);
+    EXPECT_EQ(rec_after_disable.created_at, original_ts)
+        << "disable 后 created_at 不应被重置";
+    EXPECT_EQ(rec_after_disable.password, generated_pwd);
+    EXPECT_TRUE(rec_after_disable.iv.empty());  // 明文模式 iv/tag 为空
+    EXPECT_TRUE(rec_after_disable.tag.empty());
+}
+
+/// list_generated_records 在未解锁时应返回 Unauthorized。
+TEST_F(E2EFlowTest, ListGeneratedRecordsAfterLockReturnsUnauthorized) {
+    enable_program_password();
+    lock();
+
+    auto resp = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_FALSE(resp.ok());
+    EXPECT_EQ(resp.error().code, core::ErrorCode::Unauthorized);
+}
+
+/// remove_generated_record 应删除指定记录。
+TEST_F(E2EFlowTest, RemoveGeneratedRecordDeletesIt) {
+    enable_program_password();
+
+    // 生成 2 条记录
+    for (int i = 0; i < 2; ++i) {
+        protocol::GeneratePasswordRequest req;
+        req.options.length = 10 + i;
+        auto r = send<protocol::GeneratePasswordRequest, protocol::GeneratePasswordResponse>(
+            protocol::CommandId::GeneratePassword, req);
+        ASSERT_TRUE(r.ok()) << r.error().what();
+    }
+
+    auto list = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list.ok());
+    ASSERT_EQ(list.value().records.size(), 2u);
+    const int64_t id_to_delete = list.value().records[0].id;
+
+    // 删除第一条（最新）
+    protocol::RemoveGeneratedRecordRequest rm_req;
+    rm_req.id = id_to_delete;
+    auto rm_resp = send<protocol::RemoveGeneratedRecordRequest,
+                        protocol::RemoveGeneratedRecordResponse>(
+        protocol::CommandId::RemoveGeneratedRecord, rm_req);
+    ASSERT_TRUE(rm_resp.ok()) << rm_resp.error().what();
+
+    auto list2 = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list2.ok());
+    ASSERT_EQ(list2.value().records.size(), 1u);
+    EXPECT_NE(list2.value().records[0].id, id_to_delete);
+}
+
+/// clear_generated_records 应清空全部记录。
+TEST_F(E2EFlowTest, ClearGeneratedRecordsRemovesAll) {
+    enable_program_password();
+
+    for (int i = 0; i < 3; ++i) {
+        protocol::GeneratePasswordRequest req;
+        req.options.length = 12;
+        auto r = send<protocol::GeneratePasswordRequest, protocol::GeneratePasswordResponse>(
+            protocol::CommandId::GeneratePassword, req);
+        ASSERT_TRUE(r.ok());
+    }
+    auto list_before = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list_before.ok());
+    EXPECT_EQ(list_before.value().records.size(), 3u);
+
+    auto clr_resp = send_empty<protocol::ClearGeneratedRecordsResponse>(
+        protocol::CommandId::ClearGeneratedRecords);
+    ASSERT_TRUE(clr_resp.ok()) << clr_resp.error().what();
+
+    auto list_after = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list_after.ok());
+    EXPECT_TRUE(list_after.value().records.empty());
+}
+
+/// get_generator_settings 默认返回无限制（limit=0）。
+TEST_F(E2EFlowTest, GetGeneratorSettingsDefaultsToUnlimited) {
+    enable_program_password();
+
+    auto resp = send_empty<protocol::GetGeneratorSettingsResponse>(
+        protocol::CommandId::GetGeneratorSettings);
+    ASSERT_TRUE(resp.ok()) << resp.error().what();
+    EXPECT_EQ(resp.value().history_limit, 0);  // 默认无限制
+}
+
+/// set_generator_limit 应持久化设置，并立即清理超出上限的旧记录。
+TEST_F(E2EFlowTest, SetGeneratorLimitEnforcesHistoryCap) {
+    enable_program_password();
+
+    // 生成 5 条记录
+    for (int i = 0; i < 5; ++i) {
+        protocol::GeneratePasswordRequest req;
+        req.options.length = 8;
+        auto r = send<protocol::GeneratePasswordRequest, protocol::GeneratePasswordResponse>(
+            protocol::CommandId::GeneratePassword, req);
+        ASSERT_TRUE(r.ok()) << r.error().what();
+    }
+
+    auto list_before = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list_before.ok());
+    ASSERT_EQ(list_before.value().records.size(), 5u);
+
+    // 设置上限为 2
+    protocol::SetGeneratorLimitRequest set_req;
+    set_req.limit = 2;
+    auto set_resp = send<protocol::SetGeneratorLimitRequest,
+                         protocol::SetGeneratorLimitResponse>(
+        protocol::CommandId::SetGeneratorLimit, set_req);
+    ASSERT_TRUE(set_resp.ok()) << set_resp.error().what();
+    EXPECT_TRUE(set_resp.value().success);
+
+    // 重新查询应只剩 2 条
+    auto list_after = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list_after.ok());
+    EXPECT_EQ(list_after.value().records.size(), 2u);
+
+    // get_generator_settings 应返回 2
+    auto settings = send_empty<protocol::GetGeneratorSettingsResponse>(
+        protocol::CommandId::GetGeneratorSettings);
+    ASSERT_TRUE(settings.ok());
+    EXPECT_EQ(settings.value().history_limit, 2);
+}
+
+/// set_generator_limit = 0 表示无限制，不应再删除已有记录。
+TEST_F(E2EFlowTest, SetGeneratorLimitZeroMeansUnlimited) {
+    enable_program_password();
+
+    // 先生成 3 条
+    for (int i = 0; i < 3; ++i) {
+        protocol::GeneratePasswordRequest req;
+        req.options.length = 8;
+        send<protocol::GeneratePasswordRequest, protocol::GeneratePasswordResponse>(
+            protocol::CommandId::GeneratePassword, req);
+    }
+    // 设置上限为 5（不会触发清理）
+    protocol::SetGeneratorLimitRequest set_req1;
+    set_req1.limit = 5;
+    send<protocol::SetGeneratorLimitRequest, protocol::SetGeneratorLimitResponse>(
+        protocol::CommandId::SetGeneratorLimit, set_req1);
+
+    // 再设置回 0（无限制），不应删除现有记录
+    protocol::SetGeneratorLimitRequest set_req2;
+    set_req2.limit = 0;
+    auto r2 = send<protocol::SetGeneratorLimitRequest, protocol::SetGeneratorLimitResponse>(
+        protocol::CommandId::SetGeneratorLimit, set_req2);
+    ASSERT_TRUE(r2.ok() && r2.value().success);
+
+    auto list = send_empty<protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords);
+    ASSERT_TRUE(list.ok());
+    EXPECT_EQ(list.value().records.size(), 3u);  // 0 = 无限制 → 保留全部
+}
+
+/// set_generator_limit 负数应被拒绝：service 端不会持久化负数。
+///
+/// 注意：SetGeneratorLimitResponse 是单 bool 字段，反序列化层无法可靠区分
+/// ErrorResponse（u32 + string）与合法的 success 响应，因此这里不直接断言
+/// resp.error().code，而是通过查询 settings 验证负数未被持久化。
+TEST_F(E2EFlowTest, SetGeneratorLimitNegativeIsRejected) {
+    enable_program_password();
+
+    // 先设置一个合法的初始值
+    protocol::SetGeneratorLimitRequest init_req;
+    init_req.limit = 10;
+    send<protocol::SetGeneratorLimitRequest, protocol::SetGeneratorLimitResponse>(
+        protocol::CommandId::SetGeneratorLimit, init_req);
+
+    // 尝试设置负数
+    protocol::SetGeneratorLimitRequest bad_req;
+    bad_req.limit = -1;
+    send<protocol::SetGeneratorLimitRequest, protocol::SetGeneratorLimitResponse>(
+        protocol::CommandId::SetGeneratorLimit, bad_req);
+
+    // settings 不应被负数覆盖，应仍为 10
+    auto settings = send_empty<protocol::GetGeneratorSettingsResponse>(
+        protocol::CommandId::GetGeneratorSettings);
+    ASSERT_TRUE(settings.ok());
+    EXPECT_EQ(settings.value().history_limit, 10);
 }
 
 // =============================================================================

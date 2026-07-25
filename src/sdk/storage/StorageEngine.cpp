@@ -176,6 +176,31 @@ core::Error StorageEngine::init_schema() {
     if (!err.ok()) return err;
     err = exec_sql(
         "CREATE INDEX IF NOT EXISTS idx_passwords_username ON passwords(username);");
+    if (!err.ok()) return err;
+
+    // 生成器历史记录表
+    const char* kCreateGenTable = R"SQL(
+        CREATE TABLE IF NOT EXISTS generated_passwords (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            password    BLOB NOT NULL,
+            length      INTEGER NOT NULL,
+            iv          BLOB NOT NULL,
+            tag         BLOB NOT NULL,
+            created_at  INTEGER NOT NULL
+        );
+    )SQL";
+    err = exec_sql(kCreateGenTable);
+    if (!err.ok()) return err;
+    err = exec_sql(
+        "CREATE INDEX IF NOT EXISTS idx_genpw_created_at ON generated_passwords(created_at);");
+    if (!err.ok()) return err;
+
+    // 通用 KV 设置表
+    err = exec_sql(
+        "CREATE TABLE IF NOT EXISTS settings ("
+        "  key   TEXT PRIMARY KEY,"
+        "  value TEXT NOT NULL"
+        ");");
     return err;
 }
 
@@ -529,6 +554,266 @@ core::Error StorageEngine::commit_transaction() {
 core::Error StorageEngine::rollback_transaction() {
     std::lock_guard<std::mutex> lock(mutex_);
     return exec_sql("ROLLBACK;");
+}
+
+// =============================================================================
+// 生成器历史记录
+// =============================================================================
+
+core::GeneratedPasswordRecord StorageEngine::read_generated_row(sqlite3_stmt* stmt) {
+    core::GeneratedPasswordRecord r;
+    r.id = sqlite3_column_int64(stmt, 0);
+    // password 列：以 BLOB 读取后转为 std::string（密文也是字节序列）
+    const void* pw_ptr = sqlite3_column_blob(stmt, 1);
+    int pw_bytes = sqlite3_column_bytes(stmt, 1);
+    if (pw_ptr && pw_bytes > 0) {
+        r.password.assign(static_cast<const char*>(pw_ptr),
+                          static_cast<size_t>(pw_bytes));
+    }
+    r.length = sqlite3_column_int(stmt, 2);
+    r.iv = read_blob_column(stmt, 3);
+    r.tag = read_blob_column(stmt, 4);
+    r.created_at = sqlite3_column_int64(stmt, 5);
+    return r;
+}
+
+core::Result<core::GeneratedPasswordRecord> StorageEngine::add_generated_record(
+    const core::GeneratedPasswordRecord& record) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            core::Error(core::ErrorCode::StorageError, "database not opened"));
+    }
+
+    const char* kSql = R"SQL(
+        INSERT INTO generated_passwords (password, length, iv, tag, created_at)
+        VALUES (?, ?, ?, ?, ?);
+    )SQL";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            make_storage_error("add_generated_record: prepare", db_.get()));
+    }
+    StmtHandle stmt(raw_stmt);
+
+    // password 绑定为 BLOB（无论是明文还是密文，按原始字节存储）
+    bind_blob_safe(stmt.get(), 1,
+                   record.password.data(),
+                   static_cast<int>(record.password.size()));
+    sqlite3_bind_int(stmt.get(), 2, record.length);
+    bind_blob_safe(stmt.get(), 3,
+                   record.iv.data(), static_cast<int>(record.iv.size()));
+    bind_blob_safe(stmt.get(), 4,
+                   record.tag.data(), static_cast<int>(record.tag.size()));
+    const int64_t ts = now_seconds();
+    sqlite3_bind_int64(stmt.get(), 5, ts);
+
+    rc = sqlite3_step(stmt.get());
+    if (rc != SQLITE_DONE) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            rc_to_error(rc, "add_generated_record: step", db_.get()));
+    }
+
+    core::GeneratedPasswordRecord out = record;
+    out.id = sqlite3_last_insert_rowid(db_.get());
+    out.created_at = ts;
+    return core::Result<core::GeneratedPasswordRecord>::Ok(std::move(out));
+}
+
+core::Result<core::GeneratedPasswordRecord> StorageEngine::update_generated_record(
+    const core::GeneratedPasswordRecord& record) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            core::Error(core::ErrorCode::StorageError, "database not opened"));
+    }
+    if (record.id == 0) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            core::Error(core::ErrorCode::InvalidArgument,
+                        "update_generated_record: id must not be 0"));
+    }
+
+    // 仅更新 password/length/iv/tag，保留 created_at 不变
+    const char* kSql = R"SQL(
+        UPDATE generated_passwords
+        SET password = ?, length = ?, iv = ?, tag = ?
+        WHERE id = ?;
+    )SQL";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            make_storage_error("update_generated_record: prepare", db_.get()));
+    }
+    StmtHandle stmt(raw_stmt);
+
+    bind_blob_safe(stmt.get(), 1,
+                   record.password.data(),
+                   static_cast<int>(record.password.size()));
+    sqlite3_bind_int(stmt.get(), 2, record.length);
+    bind_blob_safe(stmt.get(), 3,
+                   record.iv.data(), static_cast<int>(record.iv.size()));
+    bind_blob_safe(stmt.get(), 4,
+                   record.tag.data(), static_cast<int>(record.tag.size()));
+    sqlite3_bind_int64(stmt.get(), 5, record.id);
+
+    rc = sqlite3_step(stmt.get());
+    if (rc != SQLITE_DONE) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            rc_to_error(rc, "update_generated_record: step", db_.get()));
+    }
+    if (sqlite3_changes(db_.get()) == 0) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            core::Error(core::ErrorCode::NotFound,
+                        "update_generated_record: id not found"));
+    }
+
+    // created_at 不变，直接返回调用方传入的 record
+    return core::Result<core::GeneratedPasswordRecord>::Ok(record);
+}
+
+core::Result<std::vector<core::GeneratedPasswordRecord>>
+StorageEngine::list_generated_records() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Result<std::vector<core::GeneratedPasswordRecord>>::Err(
+            core::Error(core::ErrorCode::StorageError, "database not opened"));
+    }
+
+    const char* kSql = R"SQL(
+        SELECT id, password, length, iv, tag, created_at
+        FROM generated_passwords
+        ORDER BY created_at DESC, id DESC;
+    )SQL";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return core::Result<std::vector<core::GeneratedPasswordRecord>>::Err(
+            make_storage_error("list_generated_records: prepare", db_.get()));
+    }
+    StmtHandle stmt(raw_stmt);
+
+    std::vector<core::GeneratedPasswordRecord> results;
+    while (true) {
+        rc = sqlite3_step(stmt.get());
+        if (rc == SQLITE_ROW) {
+            results.push_back(read_generated_row(stmt.get()));
+        } else if (rc == SQLITE_DONE) {
+            break;
+        } else {
+            return core::Result<std::vector<core::GeneratedPasswordRecord>>::Err(
+                rc_to_error(rc, "list_generated_records: step", db_.get()));
+        }
+    }
+    return core::Result<std::vector<core::GeneratedPasswordRecord>>::Ok(std::move(results));
+}
+
+core::Error StorageEngine::remove_generated_record(int64_t id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Error(core::ErrorCode::StorageError, "database not opened");
+    }
+    const char* kSql = "DELETE FROM generated_passwords WHERE id = ?;";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return make_storage_error("remove_generated_record: prepare", db_.get());
+    }
+    StmtHandle stmt(raw_stmt);
+    sqlite3_bind_int64(stmt.get(), 1, id);
+    rc = sqlite3_step(stmt.get());
+    if (rc != SQLITE_DONE) {
+        return rc_to_error(rc, "remove_generated_record: step", db_.get());
+    }
+    if (sqlite3_changes(db_.get()) == 0) {
+        return core::Error(core::ErrorCode::NotFound,
+                           "remove_generated_record: id not found");
+    }
+    return core::Error{};
+}
+
+core::Error StorageEngine::clear_generated_records() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Error(core::ErrorCode::StorageError, "database not opened");
+    }
+    return exec_sql("DELETE FROM generated_passwords;");
+}
+
+// =============================================================================
+// 通用 KV 设置
+// =============================================================================
+
+core::Result<std::string> StorageEngine::get_setting(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Result<std::string>::Err(
+            core::Error(core::ErrorCode::StorageError, "database not opened"));
+    }
+    const char* kSql = "SELECT value FROM settings WHERE key = ?;";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return core::Result<std::string>::Err(
+            make_storage_error("get_setting: prepare", db_.get()));
+    }
+    StmtHandle stmt(raw_stmt);
+    sqlite3_bind_text(stmt.get(), 1, key.c_str(), -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt.get());
+    if (rc == SQLITE_ROW) {
+        const unsigned char* txt = sqlite3_column_text(stmt.get(), 0);
+        std::string value = txt ? reinterpret_cast<const char*>(txt) : "";
+        return core::Result<std::string>::Ok(std::move(value));
+    }
+    if (rc == SQLITE_DONE) {
+        // key 不存在，返回空字符串（不视为错误）
+        return core::Result<std::string>::Ok(std::string{});
+    }
+    return core::Result<std::string>::Err(
+        rc_to_error(rc, "get_setting: step", db_.get()));
+}
+
+core::Error StorageEngine::set_setting(const std::string& key,
+                                         const std::string& value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Error(core::ErrorCode::StorageError, "database not opened");
+    }
+    // value 为空 → 删除该 key（语义：空等价于不存在）
+    if (value.empty()) {
+        const char* kDel = "DELETE FROM settings WHERE key = ?;";
+        sqlite3_stmt* raw_stmt = nullptr;
+        int rc = sqlite3_prepare_v2(db_.get(), kDel, -1, &raw_stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            return make_storage_error("set_setting: delete prepare", db_.get());
+        }
+        StmtHandle stmt(raw_stmt);
+        sqlite3_bind_text(stmt.get(), 1, key.c_str(), -1, SQLITE_TRANSIENT);
+        rc = sqlite3_step(stmt.get());
+        if (rc != SQLITE_DONE) {
+            return rc_to_error(rc, "set_setting: delete step", db_.get());
+        }
+        return core::Error{};
+    }
+    const char* kSql = R"SQL(
+        INSERT INTO settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+    )SQL";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return make_storage_error("set_setting: upsert prepare", db_.get());
+    }
+    StmtHandle stmt(raw_stmt);
+    sqlite3_bind_text(stmt.get(), 1, key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 2, value.c_str(), -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt.get());
+    if (rc != SQLITE_DONE) {
+        return rc_to_error(rc, "set_setting: upsert step", db_.get());
+    }
+    return core::Error{};
 }
 
 }  // namespace pwdvault::storage

@@ -30,10 +30,10 @@ public:
     /// \return 成功时返回生成的密码字符串；失败时返回具体错误
     core::Result<std::string> generate(const core::PasswordGeneratorOptions& options) override;
 
-    /// 估算密码强度（熵值，单位 bits）。
+    /// 估算密码强度（纯熵 + 模式惩罚）。
     /// \param password 待评估的密码
-    /// \return 估算熵值；越大约安全。空密码返回 0
-    int estimate_strength(const std::string& password) override;
+    /// \return StrengthEstimate，含 bits、level、score、warnings；空密码返回全 0
+    core::StrengthEstimate estimate_strength(const std::string& password) override;
 };
 
 }  // namespace pwdvault::generator

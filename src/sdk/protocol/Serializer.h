@@ -100,6 +100,9 @@ template <> core::Result<core::SearchQuery> deserialize<core::SearchQuery>(core:
 template <> core::ByteVec serialize<core::PasswordGeneratorOptions>(const core::PasswordGeneratorOptions&);
 template <> core::Result<core::PasswordGeneratorOptions> deserialize<core::PasswordGeneratorOptions>(core::ByteSpan);
 
+template <> core::ByteVec serialize<core::StrengthEstimate>(const core::StrengthEstimate&);
+template <> core::Result<core::StrengthEstimate> deserialize<core::StrengthEstimate>(core::ByteSpan);
+
 // ---------------------------------------------------------------------------
 // 请求消息特化声明
 // ---------------------------------------------------------------------------
@@ -152,6 +155,24 @@ template <> core::Result<GeneratePasswordRequest> deserialize<GeneratePasswordRe
 template <> core::ByteVec serialize<EstimateStrengthRequest>(const EstimateStrengthRequest&);
 template <> core::Result<EstimateStrengthRequest> deserialize<EstimateStrengthRequest>(core::ByteSpan);
 
+template <> core::ByteVec serialize<ListGeneratedRecordsRequest>(const ListGeneratedRecordsRequest&);
+template <> core::Result<ListGeneratedRecordsRequest> deserialize<ListGeneratedRecordsRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<RemoveGeneratedRecordRequest>(const RemoveGeneratedRecordRequest&);
+template <> core::Result<RemoveGeneratedRecordRequest> deserialize<RemoveGeneratedRecordRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<ClearGeneratedRecordsRequest>(const ClearGeneratedRecordsRequest&);
+template <> core::Result<ClearGeneratedRecordsRequest> deserialize<ClearGeneratedRecordsRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<GetGeneratorSettingsRequest>(const GetGeneratorSettingsRequest&);
+template <> core::Result<GetGeneratorSettingsRequest> deserialize<GetGeneratorSettingsRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<SetGeneratorLimitRequest>(const SetGeneratorLimitRequest&);
+template <> core::Result<SetGeneratorLimitRequest> deserialize<SetGeneratorLimitRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<core::GeneratedPasswordRecord>(const core::GeneratedPasswordRecord&);
+template <> core::Result<core::GeneratedPasswordRecord> deserialize<core::GeneratedPasswordRecord>(core::ByteSpan);
+
 // ---------------------------------------------------------------------------
 // 响应消息特化声明
 // ---------------------------------------------------------------------------
@@ -203,6 +224,21 @@ template <> core::Result<GeneratePasswordResponse> deserialize<GeneratePasswordR
 
 template <> core::ByteVec serialize<EstimateStrengthResponse>(const EstimateStrengthResponse&);
 template <> core::Result<EstimateStrengthResponse> deserialize<EstimateStrengthResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<ListGeneratedRecordsResponse>(const ListGeneratedRecordsResponse&);
+template <> core::Result<ListGeneratedRecordsResponse> deserialize<ListGeneratedRecordsResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<RemoveGeneratedRecordResponse>(const RemoveGeneratedRecordResponse&);
+template <> core::Result<RemoveGeneratedRecordResponse> deserialize<RemoveGeneratedRecordResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<ClearGeneratedRecordsResponse>(const ClearGeneratedRecordsResponse&);
+template <> core::Result<ClearGeneratedRecordsResponse> deserialize<ClearGeneratedRecordsResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<GetGeneratorSettingsResponse>(const GetGeneratorSettingsResponse&);
+template <> core::Result<GetGeneratorSettingsResponse> deserialize<GetGeneratorSettingsResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<SetGeneratorLimitResponse>(const SetGeneratorLimitResponse&);
+template <> core::Result<SetGeneratorLimitResponse> deserialize<SetGeneratorLimitResponse>(core::ByteSpan);
 
 template <> core::ByteVec serialize<ErrorResponse>(const ErrorResponse&);
 template <> core::Result<ErrorResponse> deserialize<ErrorResponse>(core::ByteSpan);

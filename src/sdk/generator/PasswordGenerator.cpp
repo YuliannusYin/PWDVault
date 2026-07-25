@@ -16,6 +16,8 @@
 #include "PasswordGenerator.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -209,9 +211,10 @@ core::Result<std::string> PasswordGenerator::generate(const core::PasswordGenera
     return core::Result<std::string>::Ok(std::move(password));
 }
 
-int PasswordGenerator::estimate_strength(const std::string& password) {
+core::StrengthEstimate PasswordGenerator::estimate_strength(const std::string& password) {
+    core::StrengthEstimate result;
     if (password.empty()) {
-        return 0;
+        return result;  // bits=0, level=VeryWeak, score=0
     }
 
     bool has_upper = false;
@@ -236,26 +239,145 @@ int PasswordGenerator::estimate_strength(const std::string& password) {
         }
     }
 
-    // 含未知字符类型时，保守估计为完整可打印 ASCII 池（94）
-    if (has_other) {
-        double entropy =
-            static_cast<double>(password.size()) * std::log2(static_cast<double>(kEstimatedAsciiPool));
-        return static_cast<int>(entropy);
-    }
-
+    // 1) 纯熵估算：含未知字符时保守按完整 ASCII 池（94）
     size_t pool_size = 0;
-    if (has_upper)  pool_size += 26;
-    if (has_lower)  pool_size += 26;
-    if (has_digit)  pool_size += 10;
-    if (has_symbol) pool_size += kEstimatedSymbolPool;
-
-    if (pool_size == 0) {
-        return 0;
+    if (has_other) {
+        pool_size = kEstimatedAsciiPool;
+    } else {
+        if (has_upper)  pool_size += 26;
+        if (has_lower)  pool_size += 26;
+        if (has_digit)  pool_size += 10;
+        if (has_symbol) pool_size += kEstimatedSymbolPool;
     }
 
-    double entropy =
-        static_cast<double>(password.size()) * std::log2(static_cast<double>(pool_size));
-    return static_cast<int>(entropy);
+    double entropy = 0.0;
+    if (pool_size > 0) {
+        entropy = static_cast<double>(password.size())
+                  * std::log2(static_cast<double>(pool_size));
+    }
+
+    // 2) 模式检测：每命中一条按比例扣减 bits 并追加 warning
+    double penalty_factor = 1.0;
+    constexpr double kPerPatternPenalty = 0.15;  // 每条扣 15%
+
+    // 2a) 重复字符：连续相同字符 run >= 3（如 "aaa"、"111"）
+    {
+        size_t max_run = 1;
+        size_t cur_run = 1;
+        for (size_t i = 1; i < password.size(); ++i) {
+            if (password[i] == password[i - 1]) {
+                ++cur_run;
+                max_run = std::max(max_run, cur_run);
+            } else {
+                cur_run = 1;
+            }
+        }
+        if (max_run >= 3) {
+            penalty_factor -= kPerPatternPenalty;
+            result.warnings.push_back(
+                "检测到 " + std::to_string(max_run) + " 个连续重复字符");
+        }
+    }
+
+    // 2b) 分布不均：单一字符出现次数 > 50%
+    {
+        std::array<int, 256> counts{};
+        for (unsigned char c : password) {
+            counts[c]++;
+        }
+        int max_count = 0;
+        for (int c : counts) {
+            max_count = std::max(max_count, c);
+        }
+        const double ratio =
+            static_cast<double>(max_count) / static_cast<double>(password.size());
+        if (ratio > 0.5 && password.size() >= 4) {
+            penalty_factor -= kPerPatternPenalty;
+            result.warnings.push_back("字符分布不均（同一字符占比过高）");
+        }
+    }
+
+    // 2c) 顺序序列：连续 ASCII 升序/降序（差 1）长度 >= 3（如 "abc"、"321"）
+    {
+        size_t max_seq = 1;
+        size_t cur_asc = 1, cur_desc = 1;
+        for (size_t i = 1; i < password.size(); ++i) {
+            const int diff = static_cast<int>(static_cast<unsigned char>(password[i]))
+                             - static_cast<int>(static_cast<unsigned char>(password[i - 1]));
+            if (diff == 1) {
+                ++cur_asc;
+                max_seq = std::max(max_seq, cur_asc);
+                cur_desc = 1;
+            } else if (diff == -1) {
+                ++cur_desc;
+                max_seq = std::max(max_seq, cur_desc);
+                cur_asc = 1;
+            } else {
+                cur_asc = cur_desc = 1;
+            }
+        }
+        if (max_seq >= 3) {
+            penalty_factor -= kPerPatternPenalty;
+            result.warnings.push_back(
+                "检测到 " + std::to_string(max_seq) + " 位顺序字符序列");
+        }
+    }
+
+    // 2d) 键盘序列：匹配预设键盘行（长度 >= 3 的子串，正反向均检测）
+    {
+        // 4 行常见键盘序列（小写匹配）
+        static constexpr std::string_view kKeyboardRows[] = {
+            "qwertyuiop",
+            "asdfghjkl",
+            "zxcvbnm",
+            "1234567890",
+        };
+        std::string lower;
+        lower.reserve(password.size());
+        for (char c : password) {
+            lower.push_back(static_cast<char>(
+                std::tolower(static_cast<unsigned char>(c))));
+        }
+        bool hit = false;
+        size_t hit_len = 0;
+        for (std::string_view row : kKeyboardRows) {
+            const std::string srow(row);
+            // 正向
+            for (size_t i = 0; i + 3 <= lower.size(); ++i) {
+                std::string sub = lower.substr(i, 3);
+                if (srow.find(sub) != std::string::npos
+                    || std::string(srow.rbegin(), srow.rend()).find(sub) != std::string::npos) {
+                    // 扩展到最长命中
+                    size_t len = 3;
+                    while (i + len + 1 <= lower.size()) {
+                        std::string ext = lower.substr(i, len + 1);
+                        if (srow.find(ext) != std::string::npos
+                            || std::string(srow.rbegin(), srow.rend()).find(ext) != std::string::npos) {
+                            ++len;
+                        } else {
+                            break;
+                        }
+                    }
+                    hit = true;
+                    hit_len = std::max(hit_len, len);
+                }
+            }
+        }
+        if (hit) {
+            penalty_factor -= kPerPatternPenalty;
+            result.warnings.push_back(
+                "检测到键盘序列（长度 " + std::to_string(hit_len) + "）");
+        }
+    }
+
+    if (penalty_factor < 0.0) penalty_factor = 0.0;
+    entropy *= penalty_factor;
+    if (entropy < 0.0) entropy = 0.0;
+
+    result.bits = static_cast<int>(entropy);
+    result.level = core::StrengthEstimate::level_from_bits(result.bits);
+    result.score = static_cast<int>(result.level);
+    return result;
 }
 
 }  // namespace pwdvault::generator

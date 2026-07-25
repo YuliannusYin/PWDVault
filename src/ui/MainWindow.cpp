@@ -499,7 +499,7 @@ void MainWindow::update_topbar_for_view(int row) {
             break;
         case kSidebarSettings:
             topbar_title_->setText(QStringLiteral("设置"));
-            topbar_subtitle_->setText(QStringLiteral("版本 3.0.0"));
+            topbar_subtitle_->setText(QStringLiteral("版本 3.1.0"));
             topbar_count_badge_->hide();
             topbar_add_btn_->hide();
             break;

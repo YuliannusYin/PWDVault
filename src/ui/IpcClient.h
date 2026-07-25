@@ -87,6 +87,13 @@ public:
     core::Result<protocol::GeneratePasswordResponse> generate_password(const core::PasswordGeneratorOptions& options);
     core::Result<protocol::EstimateStrengthResponse> estimate_strength(const std::string& password);
 
+    // 生成器历史记录
+    core::Result<protocol::ListGeneratedRecordsResponse> list_generated_records();
+    core::Result<protocol::RemoveGeneratedRecordResponse> remove_generated_record(int64_t id);
+    core::Result<protocol::ClearGeneratedRecordsResponse> clear_generated_records();
+    core::Result<protocol::GetGeneratorSettingsResponse> get_generator_settings();
+    core::Result<protocol::SetGeneratorLimitResponse> set_generator_limit(int32_t limit);
+
 signals:
     /// 与 service 的连接断开时触发（仅在已连接→断开时触发一次）。
     void disconnected();

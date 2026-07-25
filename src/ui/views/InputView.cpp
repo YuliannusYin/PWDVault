@@ -7,6 +7,7 @@
 #include "InputView.h"
 #include "IconKit.h"
 #include "IpcClient.h"
+#include "StrengthUtil.h"
 
 #include <QApplication>
 #include <QFrame>
@@ -31,18 +32,7 @@ namespace pwdvault::ui {
 
 namespace {
 
-/// 强度颜色：< 40 红、40-80 黄、> 80 绿。
-QString strength_color(int bits) {
-    if (bits < 40) return QStringLiteral("#f56363");
-    if (bits < 80) return QStringLiteral("#f0a93c");
-    return QStringLiteral("#2bd576");
-}
-
-QString strength_text(int bits) {
-    if (bits < 40) return QStringLiteral("弱");
-    if (bits < 80) return QStringLiteral("中");
-    return QStringLiteral("强");
-}
+// 强度等级判定与文案统一通过 StrengthUtil 提供（按 core::StrengthLevel 输入）。
 
 /// 创建图标前缀的输入框容器：icon (36px) + QLineEdit + 右侧可选按钮区。
 /// 容器自身有 border，输入框透明融入。
@@ -328,27 +318,17 @@ void InputView::update_strength(const QString& password) {
     }
 
     auto result = client_->estimate_strength(password.toStdString());
-    int bits = 0;
+    core::StrengthEstimate estimate;
     if (result.ok()) {
-        bits = result.value().strength_bits;
+        estimate = result.value().estimate;
     }
 
-    const int pct = (bits >= 128) ? 100 : (bits * 100 / 128);
+    const int pct = (estimate.bits >= 128) ? 100 : (estimate.bits * 100 / 128);
     strength_bar_->setValue(pct);
 
     // 通过 dynamic property 让 QSS 接管 chunk 颜色（深浅主题适配）
-    QString strength_key;
-    QString label_class;
-    if (bits < 40) {
-        strength_key = QStringLiteral("weak");
-        label_class = QStringLiteral("error");
-    } else if (bits < 80) {
-        strength_key = QStringLiteral("medium");
-        label_class = QStringLiteral("warning");
-    } else {
-        strength_key = QStringLiteral("strong");
-        label_class = QStringLiteral("success");
-    }
+    const QString strength_key = strength_qss_key(estimate.level);
+    const QString label_class = strength_label_class(estimate.level);
     strength_bar_->setProperty("strength", strength_key);
     strength_bar_->style()->unpolish(strength_bar_);
     strength_bar_->style()->polish(strength_bar_);
@@ -357,7 +337,7 @@ void InputView::update_strength(const QString& password) {
     strength_label_->style()->unpolish(strength_label_);
     strength_label_->style()->polish(strength_label_);
     strength_label_->setText(
-        QStringLiteral("强度：%1（%2 bit）").arg(strength_text(bits)).arg(bits));
+        QStringLiteral("强度：%1（%2 bit）").arg(strength_text(estimate.level)).arg(estimate.bits));
 }
 
 void InputView::on_save_clicked() {

@@ -130,6 +130,26 @@ struct EstimateStrengthRequest {
     std::string password;
 };
 
+/// 列出生成器历史记录请求（无负载）。
+struct ListGeneratedRecordsRequest {};
+
+/// 删除单条生成记录请求。
+struct RemoveGeneratedRecordRequest {
+    int64_t id = 0;
+};
+
+/// 清空全部生成记录请求（无负载）。
+struct ClearGeneratedRecordsRequest {};
+
+/// 查询生成器设置请求（无负载）。
+struct GetGeneratorSettingsRequest {};
+
+/// 设置历史记录上限请求。
+/// \note limit = 0 表示无限制；正整数表示保留最近 N 条。
+struct SetGeneratorLimitRequest {
+    int32_t limit = 0;
+};
+
 // ---------------------------------------------------------------------------
 // 响应消息
 // ---------------------------------------------------------------------------
@@ -208,9 +228,30 @@ struct GeneratePasswordResponse {
     std::string password;
 };
 
-/// 评估强度响应。strength_bits 为估算的熵（bit 数）。
+/// 评估强度响应。携带完整的 StrengthEstimate（bits / level / score / warnings）。
 struct EstimateStrengthResponse {
-    int strength_bits = 0;
+    core::StrengthEstimate estimate;
+};
+
+/// 列出生成记录响应。records 已按 created_at 倒序排列。
+struct ListGeneratedRecordsResponse {
+    std::vector<core::GeneratedPasswordRecord> records;
+};
+
+/// 删除单条生成记录响应（无负载）。
+struct RemoveGeneratedRecordResponse {};
+
+/// 清空全部生成记录响应（无负载）。
+struct ClearGeneratedRecordsResponse {};
+
+/// 查询生成器设置响应。
+struct GetGeneratorSettingsResponse {
+    int32_t history_limit = 0;  ///< 历史记录上限；0 表示无限制
+};
+
+/// 设置历史记录上限响应。
+struct SetGeneratorLimitResponse {
+    bool success = false;
 };
 
 // ---------------------------------------------------------------------------

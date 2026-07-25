@@ -111,10 +111,25 @@ UI 客户端通过 `CreateFile` 打开管道，建立连接后即可双向读写
 
 ### 3.4 密码生成与强度评估（0x03xx）
 
-| CommandId         | 值     | 名称         | 请求结构                  | 响应结构                   |
-|-------------------|--------|--------------|---------------------------|----------------------------|
-| `GeneratePassword`| 0x0300 | 生成密码     | `GeneratePasswordRequest` | `GeneratePasswordResponse` |
-| `EstimateStrength`| 0x0301 | 评估强度     | `EstimateStrengthRequest` | `EstimateStrengthResponse` |
+| CommandId                  | 值     | 名称                  | 请求结构                        | 响应结构                          |
+|----------------------------|--------|-----------------------|---------------------------------|-----------------------------------|
+| `GeneratePassword`         | 0x0300 | 生成密码              | `GeneratePasswordRequest`       | `GeneratePasswordResponse`        |
+| `EstimateStrength`         | 0x0301 | 评估强度              | `EstimateStrengthRequest`       | `EstimateStrengthResponse`        |
+| `ListGeneratedRecords`     | 0x0302 | 列出生成记录          | `ListGeneratedRecordsRequest`   | `ListGeneratedRecordsResponse`    |
+| `RemoveGeneratedRecord`    | 0x0303 | 按id删除单条生成记录  | `RemoveGeneratedRecordRequest`  | `RemoveGeneratedRecordResponse`   |
+| `ClearGeneratedRecords`    | 0x0304 | 清空全部生成记录      | `ClearGeneratedRecordsRequest`  | `ClearGeneratedRecordsResponse`   |
+| `GetGeneratorSettings`     | 0x0305 | 查询生成器设置        | `GetGeneratorSettingsRequest`   | `GetGeneratorSettingsResponse`    |
+| `SetGeneratorLimit`        | 0x0306 | 设置历史记录上限      | `SetGeneratorLimitRequest`      | `SetGeneratorLimitResponse`       |
+
+> **生成记录加密约定**：`generate_password` 成功后 service 自动追加一条
+> `GeneratedPasswordRecord` 到 `generated_passwords` 表。password 字段在
+> 加密模式下用 `entry_crypto_` 加密为 `[IV(12) || ciphertext || tag(16)]`，与
+> entry.password 同构；明文模式下 iv / tag 为空、password 为明文 BLOB。
+> 启用 / 禁用程序密码时，所有生成记录会随 entry 一起被重新加密 / 解密，
+> 通过 `IStorageEngine::update_generated_record` 仅更新 password / iv / tag
+> 字段，保留 id 与 created_at 不变（避免丢失原始生成时间）。
+> `set_generator_limit` 设置上限后立即触发清理：保留最新 N 条（按
+> `created_at DESC, id DESC` 排序），其余删除；`limit = 0` 表示无限制。
 
 ## 4. 请求 / 响应结构
 
@@ -246,9 +261,70 @@ struct EstimateStrengthRequest {
     std::string password;
 };
 struct EstimateStrengthResponse {
-    int strength_bits = 0;       // 估算熵值（bit 数）
+    core::StrengthEstimate estimate;
 };
 ```
+
+#### 4.4.1 生成器历史记录
+
+```cpp
+struct ListGeneratedRecordsRequest {};     // 空负载
+struct ListGeneratedRecordsResponse {
+    std::vector<core::GeneratedPasswordRecord> records;  // 按 created_at 倒序
+};
+
+struct RemoveGeneratedRecordRequest {
+    int64_t id = 0;
+};
+struct RemoveGeneratedRecordResponse {};    // 空负载
+
+struct ClearGeneratedRecordsRequest {};     // 空负载
+struct ClearGeneratedRecordsResponse {};    // 空负载
+
+struct GetGeneratorSettingsRequest {};      // 空负载
+struct GetGeneratorSettingsResponse {
+    int32_t history_limit = 0;              // 0 = 无限制；正整数 = 保留最近 N 条
+};
+
+struct SetGeneratorLimitRequest {
+    int32_t limit = 0;                       // 0 = 无限制；正整数 = 保留最近 N 条
+};
+struct SetGeneratorLimitResponse {
+    bool success = false;
+};
+```
+
+`core::GeneratedPasswordRecord`（`src/sdk/core/Types.h`）：
+
+```cpp
+struct GeneratedPasswordRecord {
+    int64_t id = 0;            // 主键，0 表示尚未分配的新记录
+    std::string password;      // 内存中为明文；持久化为密文 BLOB
+    int32_t length = 0;        // 生成时的密码长度
+    int64_t created_at = 0;    // Unix 时间戳（秒）
+    ByteVec iv;                // AES-256-GCM 的 IV；明文模式下为空
+    ByteVec tag;               // AES-256-GCM 的 tag；明文模式下为空
+};
+```
+
+`core::StrengthEstimate` 字段布局：
+
+| 字段       | 类型                    | 说明                                              |
+| ---------- | ----------------------- | ------------------------------------------------- |
+| `bits`     | `int`                   | 估算熵（bit 数），模式惩罚后的最终值             |
+| `level`    | `core::StrengthLevel`   | 强度等级枚举（VeryWeak/Weak/Medium/Strong/VeryStrong） |
+| `score`    | `int`                   | 0..4，与 `level` 数值对应，UI 直接用作进度条段数 |
+| `warnings` | `std::vector<std::string>` | 检测到的弱模式中文描述（重复字符/顺序序列/键盘序列/分布不均） |
+
+阈值（按 `bits` 计算 `level`）：
+
+| level       | bits 范围    |
+| ----------- | ------------ |
+| VeryWeak    | < 28         |
+| Weak        | 28 .. 50     |
+| Medium      | 50 .. 70     |
+| Strong      | 70 .. 100    |
+| VeryStrong  | >= 100       |
 
 ### 4.5 通用错误响应
 

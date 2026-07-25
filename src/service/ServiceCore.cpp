@@ -200,6 +200,94 @@ core::Result<core::PasswordEntry> ServiceCore::decrypt_entry(
     return core::Result<core::PasswordEntry>::Ok(std::move(entry));
 }
 
+core::Result<core::GeneratedPasswordRecord> ServiceCore::encrypt_generated_record(
+    core::GeneratedPasswordRecord record) const {
+    // 明文模式：不做加密
+    if (!password_enabled_) {
+        record.iv.clear();
+        record.tag.clear();
+        return core::Result<core::GeneratedPasswordRecord>::Ok(std::move(record));
+    }
+    if (!entry_crypto_) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            core::Error(core::ErrorCode::Unauthorized, "vault is locked"));
+    }
+    core::ByteSpan plaintext(
+        reinterpret_cast<const std::byte*>(record.password.data()),
+        record.password.size());
+    auto enc_result = entry_crypto_->encrypt(plaintext);
+    if (!enc_result) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(enc_result.error());
+    }
+    const auto& blob = *enc_result;
+    if (blob.size() < kIvLen + kTagLen) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            core::Error(core::ErrorCode::CryptoError, "ciphertext blob too short"));
+    }
+    record.iv.assign(blob.begin(), blob.begin() + kIvLen);
+    record.tag.assign(blob.end() - kTagLen, blob.end());
+    record.password.assign(
+        reinterpret_cast<const char*>(blob.data() + kIvLen),
+        blob.size() - kIvLen - kTagLen);
+    return core::Result<core::GeneratedPasswordRecord>::Ok(std::move(record));
+}
+
+core::Result<core::GeneratedPasswordRecord> ServiceCore::decrypt_generated_record(
+    core::GeneratedPasswordRecord record) const {
+    // 明文模式：不做解密
+    if (!password_enabled_) {
+        return core::Result<core::GeneratedPasswordRecord>::Ok(std::move(record));
+    }
+    if (!entry_crypto_) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(
+            core::Error(core::ErrorCode::Unauthorized, "vault is locked"));
+    }
+    core::ByteVec blob;
+    blob.reserve(record.iv.size() + record.password.size() + record.tag.size());
+    blob.insert(blob.end(), record.iv.begin(), record.iv.end());
+    blob.insert(blob.end(),
+                reinterpret_cast<const std::byte*>(record.password.data()),
+                reinterpret_cast<const std::byte*>(record.password.data()) +
+                    record.password.size());
+    blob.insert(blob.end(), record.tag.begin(), record.tag.end());
+    auto dec_result = entry_crypto_->decrypt(blob);
+    if (!dec_result) {
+        return core::Result<core::GeneratedPasswordRecord>::Err(dec_result.error());
+    }
+    record.password = std::move(*dec_result);
+    record.iv.clear();
+    record.tag.clear();
+    return core::Result<core::GeneratedPasswordRecord>::Ok(std::move(record));
+}
+
+int32_t ServiceCore::current_generator_limit() {
+    auto r = storage_->get_setting("generator.history_limit");
+    if (!r) return core::kGeneratorLimitUnlimited;
+    if (r->empty()) return core::kGeneratorLimitUnlimited;
+    try {
+        return static_cast<int32_t>(std::stoi(*r));
+    } catch (...) {
+        return core::kGeneratorLimitUnlimited;
+    }
+}
+
+core::Error ServiceCore::enforce_generator_limit(int32_t limit) {
+    if (limit <= 0) return core::Error{};  // 0 = 无限制
+    auto list_result = storage_->list_generated_records();
+    if (!list_result) {
+        return list_result.error();
+    }
+    // list_generated_records 返回顺序：created_at DESC, id DESC
+    // 即最新在前；保留前 limit 条，删除其余
+    auto& records = *list_result;
+    if (static_cast<int32_t>(records.size()) <= limit) return core::Error{};
+    for (size_t i = static_cast<size_t>(limit); i < records.size(); ++i) {
+        auto rm_err = storage_->remove_generated_record(records[i].id);
+        if (!rm_err.ok()) return rm_err;
+    }
+    return core::Error{};
+}
+
 // ============================================================================
 // 请求分发
 // ============================================================================
@@ -223,6 +311,11 @@ core::ByteVec ServiceCore::handle_request(core::ByteSpan payload,
         case CommandId::ListEntries:             return handle_list_entries();
         case CommandId::GeneratePassword:        return handle_generate_password(payload);
         case CommandId::EstimateStrength:        return handle_estimate_strength(payload);
+        case CommandId::ListGeneratedRecords:    return handle_list_generated_records();
+        case CommandId::RemoveGeneratedRecord:   return handle_remove_generated_record(payload);
+        case CommandId::ClearGeneratedRecords:   return handle_clear_generated_records();
+        case CommandId::GetGeneratorSettings:    return handle_get_generator_settings();
+        case CommandId::SetGeneratorLimit:        return handle_set_generator_limit(payload);
         case CommandId::Shutdown:
             // Shutdown 由 main.cpp 的 handler lambda 拦截处理，不应到达此处
             return protocol::serialize(protocol::ShutdownResponse{});
@@ -376,6 +469,20 @@ core::ByteVec ServiceCore::handle_enable_program_password(core::ByteSpan payload
         }
     }
 
+    // 3b. 同步重新加密所有生成记录（明文→密文）
+    //     失败视为非致命：记录仍可由用户清空，不影响主流程的成功
+    //     使用 update_generated_record 保留原始 created_at 时间戳
+    {
+        auto gen_list = storage_->list_generated_records();
+        if (gen_list) {
+            for (auto& rec : *gen_list) {
+                auto enc = encrypt_generated_record(std::move(rec));
+                if (!enc) break;
+                (void)storage_->update_generated_record(*enc);
+            }
+        }
+    }
+
     protocol::EnableProgramPasswordResponse resp;
     resp.success = true;
     return protocol::serialize(resp);
@@ -450,6 +557,20 @@ core::ByteVec ServiceCore::handle_disable_program_password(core::ByteSpan payloa
             resp.error_message = std::string("failed to update plaintext entry: ") +
                                  upd_result.error().what();
             return protocol::serialize(resp);
+        }
+    }
+
+    // 2b. 同步重新解密所有生成记录（密文→明文）
+    //     失败视为非致命：记录仍可由用户清空，不影响主流程的成功
+    //     使用 update_generated_record 保留原始 created_at 时间戳
+    {
+        auto gen_list = storage_->list_generated_records();
+        if (gen_list) {
+            for (auto& rec : *gen_list) {
+                auto dec = decrypt_generated_record(std::move(rec));
+                if (!dec) break;
+                (void)storage_->update_generated_record(*dec);
+            }
         }
     }
 
@@ -686,6 +807,20 @@ core::ByteVec ServiceCore::handle_generate_password(core::ByteSpan payload) {
     if (!gen_result) {
         return make_error(gen_result.error().code, gen_result.error().what());
     }
+
+    // 自动追加一条生成记录（失败不影响生成响应）
+    core::GeneratedPasswordRecord record;
+    record.password = *gen_result;
+    record.length = static_cast<int32_t>((*gen_result).size());
+    auto enc_rec = encrypt_generated_record(std::move(record));
+    if (enc_rec) {
+        auto add_err = storage_->add_generated_record(*enc_rec);
+        if (add_err.ok()) {
+            // 追加成功后执行上限清理（best-effort，失败忽略）
+            (void)enforce_generator_limit(current_generator_limit());
+        }
+    }
+
     protocol::GeneratePasswordResponse resp;
     resp.password = std::move(*gen_result);
     return protocol::serialize(resp);
@@ -703,9 +838,113 @@ core::ByteVec ServiceCore::handle_estimate_strength(core::ByteSpan payload) {
                               req_result.error().what());
     }
     protocol::EstimateStrengthResponse resp;
-    resp.strength_bits = generator_->estimate_strength(req_result->password);
+    resp.estimate = generator_->estimate_strength(req_result->password);
     // 请求中的密码不再需要，清零（反序列化的 string 在 req_result 析构时释放，但不清零）
     secure_zero_string(req_result->password);
+    return protocol::serialize(resp);
+}
+
+// ============================================================================
+// 生成器历史记录
+// ============================================================================
+
+core::ByteVec ServiceCore::handle_list_generated_records() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto list_result = storage_->list_generated_records();
+    if (!list_result) {
+        return make_error(list_result.error().code,
+                          std::string("list_generated_records: ") +
+                              list_result.error().what());
+    }
+    protocol::ListGeneratedRecordsResponse resp;
+    resp.records.reserve((*list_result).size());
+    for (auto& rec : *list_result) {
+        auto dec = decrypt_generated_record(std::move(rec));
+        if (!dec) {
+            // 解密失败的记录跳过，不阻塞整个列表
+            continue;
+        }
+        resp.records.push_back(*dec);
+    }
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_remove_generated_record(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::RemoveGeneratedRecordRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed RemoveGeneratedRecordRequest: ") +
+                              req_result.error().what());
+    }
+    auto rm_err = storage_->remove_generated_record(req_result->id);
+    if (!rm_err.ok()) {
+        return make_error(rm_err.code,
+                          std::string("remove_generated_record: ") + rm_err.what());
+    }
+    return protocol::serialize(protocol::RemoveGeneratedRecordResponse{});
+}
+
+core::ByteVec ServiceCore::handle_clear_generated_records() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto clr_err = storage_->clear_generated_records();
+    if (!clr_err.ok()) {
+        return make_error(clr_err.code,
+                          std::string("clear_generated_records: ") + clr_err.what());
+    }
+    return protocol::serialize(protocol::ClearGeneratedRecordsResponse{});
+}
+
+core::ByteVec ServiceCore::handle_get_generator_settings() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    protocol::GetGeneratorSettingsResponse resp;
+    resp.history_limit = current_generator_limit();
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_set_generator_limit(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::SetGeneratorLimitRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed SetGeneratorLimitRequest: ") +
+                              req_result.error().what());
+    }
+    // 负数视为非法
+    if (req_result->limit < 0) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          "limit must be >= 0 (0 = unlimited)");
+    }
+    // 持久化（0 在 set_setting 中被解释为"删除"，此处显式存字符串 "0"）
+    auto set_err = storage_->set_setting(
+        "generator.history_limit", std::to_string(req_result->limit));
+    if (!set_err.ok()) {
+        return make_error(set_err.code,
+                          std::string("set_setting: ") + set_err.what());
+    }
+    // 立即执行一次上限清理
+    auto enf_err = enforce_generator_limit(req_result->limit);
+    if (!enf_err.ok()) {
+        return make_error(enf_err.code,
+                          std::string("enforce_generator_limit: ") + enf_err.what());
+    }
+    protocol::SetGeneratorLimitResponse resp;
+    resp.success = true;
     return protocol::serialize(resp);
 }
 
