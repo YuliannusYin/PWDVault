@@ -8,6 +8,8 @@
 #include "IconKit.h"
 #include "IpcClient.h"
 #include "StrengthUtil.h"
+#include "TagInputWidget.h"
+#include "Theme.h"
 
 #include <QApplication>
 #include <QFrame>
@@ -73,6 +75,12 @@ InputView::InputView(IpcClient* client, QWidget* parent)
     : QWidget(parent), client_(client)
 {
     build_ui();
+    // 主题切换后重新应用 primary 按钮内联样式
+    if (Theme* t = Theme::instance()) {
+        connect(t, &Theme::theme_changed, this, [this]() {
+            apply_primary_button_style(save_button_);
+        });
+    }
 }
 
 InputView::~InputView() = default;
@@ -119,35 +127,47 @@ void InputView::build_ui() {
 
     card_layout->addSpacing(24);
 
-    // 网站
-    auto* website_label = new QLabel(
-        QStringLiteral("网站 <span style=\"color:#f56363;\">*</span>"), card);
-    website_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
-    website_label->setTextFormat(Qt::RichText);
-    card_layout->addWidget(website_label);
+    // ── *条目名（必填） ──
+    auto* entry_name_label = new QLabel(
+        QStringLiteral("条目名 <span style=\"color:#f56363;\">*</span>"), card);
+    entry_name_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
+    entry_name_label->setTextFormat(Qt::RichText);
+    card_layout->addWidget(entry_name_label);
     card_layout->addSpacing(6);
-    auto* website_field = make_icon_input_field(
-        card, QStringLiteral(":/icons/globe.svg"), website_edit_);
-    card_layout->addWidget(website_field);
-    website_edit_->setPlaceholderText(QStringLiteral("example.com"));
+    auto* entry_name_field = make_icon_input_field(
+        card, QStringLiteral(":/icons/database.svg"), entry_name_edit_);
+    card_layout->addWidget(entry_name_field);
+    entry_name_edit_->setPlaceholderText(QStringLiteral("如：GitHub、公司邮箱"));
 
     card_layout->addSpacing(16);
 
-    // 用户名
-    auto* username_label = new QLabel(
-        QStringLiteral("用户名 <span style=\"color:#f56363;\">*</span>"), card);
+    // ── 用户名（可选） ──
+    auto* username_label = new QLabel(QStringLiteral("用户名"), card);
     username_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
-    username_label->setTextFormat(Qt::RichText);
     card_layout->addWidget(username_label);
     card_layout->addSpacing(6);
     auto* username_field = make_icon_input_field(
-        card, QStringLiteral(":/icons/at-sign.svg"), username_edit_);
+        card, QStringLiteral(":/icons/user.svg"), username_edit_);
     card_layout->addWidget(username_field);
-    username_edit_->setPlaceholderText(QStringLiteral("用户名或邮箱"));
+    username_edit_->setPlaceholderText(QStringLiteral("显示名，如：张三"));
 
     card_layout->addSpacing(16);
 
-    // 密码（特殊：带生成 + 可见性按钮）
+    // ── *账号（必填） ──
+    auto* account_label = new QLabel(
+        QStringLiteral("账号 <span style=\"color:#f56363;\">*</span>"), card);
+    account_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
+    account_label->setTextFormat(Qt::RichText);
+    card_layout->addWidget(account_label);
+    card_layout->addSpacing(6);
+    auto* account_field = make_icon_input_field(
+        card, QStringLiteral(":/icons/at-sign.svg"), account_edit_);
+    card_layout->addWidget(account_field);
+    account_edit_->setPlaceholderText(QStringLiteral("登录账号或邮箱"));
+
+    card_layout->addSpacing(16);
+
+    // ── *密码（必填，带生成 + 可见性按钮） ──
     auto* pwd_label = new QLabel(
         QStringLiteral("密码 <span style=\"color:#f56363;\">*</span>"), card);
     pwd_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
@@ -197,14 +217,53 @@ void InputView::build_ui() {
 
     card_layout->addSpacing(16);
 
-    // 备注
-    auto* note_label = new QLabel(QStringLiteral("备注"), card);
+    // ── 网站（可选） ──
+    auto* website_label = new QLabel(QStringLiteral("网站"), card);
+    website_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
+    card_layout->addWidget(website_label);
+    card_layout->addSpacing(6);
+    auto* website_field = make_icon_input_field(
+        card, QStringLiteral(":/icons/globe.svg"), website_edit_);
+    card_layout->addWidget(website_field);
+    website_edit_->setPlaceholderText(QStringLiteral("example.com"));
+
+    card_layout->addSpacing(16);
+
+    // ── 标签（可选，芯片流式输入） ──
+    auto* tag_label = new QLabel(QStringLiteral("标签"), card);
+    tag_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
+    card_layout->addWidget(tag_label);
+    card_layout->addSpacing(6);
+    // 标签输入容器：左侧 tag 图标 + TagInputWidget（融入 inputField 一体化边框）
+    auto* tag_field = new QFrame(card);
+    tag_field->setProperty("cssClass", QStringLiteral("inputField"));
+    auto* tag_field_layout = new QHBoxLayout(tag_field);
+    tag_field_layout->setContentsMargins(0, 0, 0, 0);
+    tag_field_layout->setSpacing(0);
+
+    auto* tag_icon = new QLabel(tag_field);
+    tag_icon->setPixmap(tinted_pixmap(QStringLiteral(":/icons/tag.svg"), IconRole::Normal, QSize(18, 18)));
+    tag_icon->setProperty("cssClass", QStringLiteral("inlineIcon"));
+    tag_icon->setFixedSize(36, 40);
+    tag_icon->setAlignment(Qt::AlignCenter);
+    tag_field_layout->addWidget(tag_icon, 0, Qt::AlignVCenter);
+
+    tag_input_ = new TagInputWidget(tag_field);
+    tag_input_->setProperty("cssClass", QStringLiteral("tagInput"));
+    tag_input_->setMinimumHeight(40);
+    tag_field_layout->addWidget(tag_input_, 1);
+    card_layout->addWidget(tag_field);
+
+    card_layout->addSpacing(16);
+
+    // ── 备注（可选，markdown 源码） ──
+    auto* note_label = new QLabel(QStringLiteral("备注（markdown）"), card);
     note_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     card_layout->addWidget(note_label);
     card_layout->addSpacing(6);
     note_edit_ = new QPlainTextEdit(card);
     note_edit_->setPlaceholderText(
-        QStringLiteral("可选：备注、恢复码、安全问题…"));
+        QStringLiteral("可选：支持 markdown 语法（# 标题、**粗体**、`代码`、- 列表）"));
     note_edit_->setFixedHeight(96);
     card_layout->addWidget(note_edit_);
 
@@ -244,7 +303,7 @@ void InputView::build_ui() {
     save_button_->setText(QStringLiteral("保存条目"));
     save_button_->setCursor(Qt::PointingHandCursor);
     save_button_->setFixedHeight(40);
-    save_button_->setProperty("cssClass", QStringLiteral("primary"));
+    apply_primary_button_style(save_button_);
     footer_row->addWidget(save_button_);
     card_layout->addLayout(footer_row);
 
@@ -272,6 +331,9 @@ void InputView::build_ui() {
     connect(strength_timer_, &QTimer::timeout, this, [this]() {
         if (password_edit_) update_strength(password_edit_->text());
     });
+
+    // 加载已有标签供补全
+    refresh_existing_tags();
 }
 
 void InputView::set_password(const QString& password) {
@@ -279,7 +341,7 @@ void InputView::set_password(const QString& password) {
 }
 
 void InputView::focus_first_field() {
-    if (website_edit_) website_edit_->setFocus();
+    if (entry_name_edit_) entry_name_edit_->setFocus();
 }
 
 void InputView::on_generate_clicked() {
@@ -348,18 +410,19 @@ void InputView::on_save_clicked() {
         return;
     }
 
-    const QString website = website_edit_->text().trimmed();
-    const QString username = username_edit_->text().trimmed();
+    const QString entry_name = entry_name_edit_->text().trimmed();
+    const QString account = account_edit_->text().trimmed();
     const QString password = password_edit_->text();
 
-    if (website.isEmpty()) {
-        set_error(QStringLiteral("网站/应用名称不能为空。"));
-        website_edit_->setFocus();
+    // 必填校验：entry_name / account / password
+    if (entry_name.isEmpty()) {
+        set_error(QStringLiteral("条目名不能为空。"));
+        entry_name_edit_->setFocus();
         return;
     }
-    if (username.isEmpty()) {
-        set_error(QStringLiteral("账号/用户名不能为空。"));
-        username_edit_->setFocus();
+    if (account.isEmpty()) {
+        set_error(QStringLiteral("账号不能为空。"));
+        account_edit_->setFocus();
         return;
     }
     if (password.isEmpty()) {
@@ -370,10 +433,15 @@ void InputView::on_save_clicked() {
 
     core::PasswordEntry entry;
     entry.id = 0;
-    entry.website = website.toStdString();
-    entry.username = username.toStdString();
+    entry.entry_name = entry_name.toStdString();
+    entry.account = account.toStdString();
+    entry.username = username_edit_->text().trimmed().toStdString();
     entry.password = password.toStdString();
+    entry.website = website_edit_->text().trimmed().toStdString();
     entry.note = note_edit_->toPlainText().toStdString();
+    if (tag_input_) {
+        entry.tags = tag_input_->selected_tags();
+    }
 
     auto result = client_->add_entry(entry);
     if (result.ok()) {
@@ -391,21 +459,32 @@ void InputView::on_save_clicked() {
 }
 
 void InputView::on_clear_clicked() {
-    website_edit_->clear();
+    entry_name_edit_->clear();
+    account_edit_->clear();
     username_edit_->clear();
     password_edit_->clear();
+    website_edit_->clear();
+    if (tag_input_) tag_input_->set_selected_tags({});
     note_edit_->clear();
     if (password_visible_) {
         on_toggle_password_clicked();
     }
     set_error(QString());
-    website_edit_->setFocus();
+    entry_name_edit_->setFocus();
 }
 
 void InputView::set_error(const QString& message) {
     if (!error_label_) return;
     error_label_->setText(message);
     error_label_->setVisible(!message.isEmpty());
+}
+
+void InputView::refresh_existing_tags() {
+    if (!client_ || !tag_input_) return;
+    auto result = client_->list_tags();
+    if (result.ok()) {
+        tag_input_->set_existing_tags(result.value().tags);
+    }
 }
 
 }  // namespace pwdvault::ui

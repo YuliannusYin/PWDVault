@@ -131,6 +131,29 @@ UI 客户端通过 `CreateFile` 打开管道，建立连接后即可双向读写
 > `set_generator_limit` 设置上限后立即触发清理：保留最新 N 条（按
 > `created_at DESC, id DESC` 排序），其余删除；`limit = 0` 表示无限制。
 
+### 3.5 标签管理与条目-标签关联（0x04xx）
+
+| CommandId        | 值     | 名称                  | 请求结构                | 响应结构                |
+|------------------|--------|-----------------------|-------------------------|--------------------------|
+| `AddTag`         | 0x0400 | 新增标签              | `AddTagRequest`         | `AddTagResponse`        |
+| `UpdateTag`      | 0x0401 | 更新标签              | `UpdateTagRequest`      | `UpdateTagResponse`     |
+| `RemoveTag`      | 0x0402 | 按 id 删除标签        | `RemoveTagRequest`      | `RemoveTagResponse`     |
+| `ListTags`       | 0x0403 | 列出全部标签          | `ListTagsRequest`       | `ListTagsResponse`      |
+| `GetTag`         | 0x0404 | 按 id 获取单条标签    | `GetTagRequest`         | `GetTagResponse`        |
+| `FindTagByName`  | 0x0405 | 按 name 查找标签      | `FindTagByNameRequest`  | `FindTagByNameResponse` |
+| `GetEntryTags`   | 0x0406 | 获取指定条目的标签    | `GetEntryTagsRequest`   | `GetEntryTagsResponse`  |
+| `SetEntryTags`   | 0x0407 | 全量替换条目的标签关联| `SetEntryTagsRequest`   | `SetEntryTagsResponse`  |
+
+> **标签存储约定**：标签独立存储于 `tags` 表，`name` 字段在全库范围内唯一
+> （大小写敏感）。条目与标签为多对多关系，通过 `entry_tags` 关联表维护，
+> 启用外键 `ON DELETE CASCADE`：删除 Tag 时自动清理关联，删除 Entry 时同步清理。
+> `set_entry_tags` 为**全量替换**语义：以请求中的 `tag_ids` 列表为准，
+> 重复项由实现去重，不存在的 `tag_id` 静默跳过。
+>
+> **AddEntry / UpdateEntry 隐式标签处理**：当 `PasswordEntry.tags` 中包含
+> `id == 0` 的新标签时，service 端 `ServiceCore::resolve_entry_tags` 会自动
+> 创建并分配 id，再回写关联；已存在的标签按 `id` 关联，按 `name` 去重。
+
 ## 4. 请求 / 响应结构
 
 所有结构定义于 `src/sdk/protocol/Messages.h`，为 POD-like 聚合。
@@ -326,7 +349,80 @@ struct GeneratedPasswordRecord {
 | Strong      | 70 .. 100    |
 | VeryStrong  | >= 100       |
 
-### 4.5 通用错误响应
+### 4.5 标签（Tag）管理
+
+```cpp
+struct AddTagRequest {
+    core::Tag tag;              // tag.id 通常为 0，由 service 分配后返回
+};
+struct AddTagResponse {
+    core::Tag tag;              // 含分配的 id 与时间戳
+};
+
+struct UpdateTagRequest {
+    core::Tag tag;              // tag.id 必须非 0
+};
+struct UpdateTagResponse {
+    core::Tag tag;              // 更新后的最新值
+};
+
+struct RemoveTagRequest {
+    int64_t id = 0;
+};
+struct RemoveTagResponse {};     // 空负载
+
+struct ListTagsRequest {};      // 空负载
+struct ListTagsResponse {
+    std::vector<core::Tag> tags;  // 按 name 升序排列
+};
+
+struct GetTagRequest {
+    int64_t id = 0;
+};
+struct GetTagResponse {
+    core::Tag tag;
+};
+
+struct FindTagByNameRequest {
+    std::string name;          // 精确匹配（大小写敏感）
+};
+struct FindTagByNameResponse {
+    core::Tag tag;             // 未找到时返回 ErrorResponse（code=NotFound）
+};
+
+struct GetEntryTagsRequest {
+    int64_t entry_id = 0;
+};
+struct GetEntryTagsResponse {
+    std::vector<core::Tag> tags;  // 该条目关联的全部标签
+};
+
+struct SetEntryTagsRequest {
+    int64_t entry_id = 0;
+    std::vector<int64_t> tag_ids;  // 全量替换：重复项去重，不存在的 id 静默跳过
+};
+struct SetEntryTagsResponse {};    // 空负载
+```
+
+`core::Tag`（`src/sdk/core/Types.h`）：
+
+```cpp
+struct Tag {
+    int64_t id = 0;            // 主键，0 表示尚未分配的新标签
+    std::string name;          // 唯一名称（不可重复，大小写敏感）
+    std::string color;         // 十六进制颜色 "#RRGGBB"，可空表示默认色
+    int64_t created_at = 0;    // 创建时间（Unix 时间戳，秒）
+    int64_t updated_at = 0;    // 最后更新时间（Unix 时间戳，秒）
+};
+```
+
+> **Tag CRUD 错误约定**：
+> - `AddTag` 名称重复 → `ErrorResponse`（`code=AlreadyExists`）
+> - `UpdateTag` / `RemoveTag` / `GetTag` id 不存在 → `ErrorResponse`（`code=NotFound`）
+> - `FindTagByName` 未找到 → `ErrorResponse`（`code=NotFound`）
+> - `SetEntryTags` entry_id 不存在 → `ErrorResponse`（`code=NotFound`）
+
+### 4.6 通用错误响应
 
 当请求处理失败且无具体响应结构时，service 返回 `ErrorResponse`：
 
@@ -351,17 +447,20 @@ struct ErrorResponse {
 | `IpcError`          | IPC 错误          | 命名管道通信错误、协议解析失败             |
 | `InternalError`     | 内部错误          | 其他未分类错误                             |
 
-### 4.6 core 数据类型
+### 4.7 core 数据类型
 
 `core::PasswordEntry`（`src/sdk/core/Types.h`）：
 
 ```cpp
 struct PasswordEntry {
     int64_t id = 0;              // 主键，0 表示新条目
-    std::string website;
-    std::string username;
-    std::string password;        // 内存中明文；持久化为密文 + iv + tag
-    std::string note;
+    std::string entry_name;      // *必填* 条目显示标题
+    std::string account;         // *必填* 登录账号
+    std::string username;        // 可选 显示名
+    std::string password;        // *必填* 内存中明文；持久化为密文 + iv + tag
+    std::string website;         // 可选 站点 URL
+    std::string note;            // 可选 备注（markdown 源码）
+    std::vector<Tag> tags;       // 关联标签列表
     int64_t created_at = 0;      // Unix 时间戳（秒）
     int64_t updated_at = 0;
     ByteVec iv;                  // AES-256-GCM 的 IV，固定 12 字节
@@ -374,8 +473,12 @@ struct PasswordEntry {
 ```cpp
 struct SearchQuery {
     std::string text;                       // 子串匹配文本
-    std::vector<std::string> fields;        // 限定字段：website/username/password/note
-    bool case_sensitive = false;            // 空表示搜索全部字段
+    std::vector<std::string> fields;        // 限定字段：
+                                            // entry_name / account / username / website / note
+                                            // 空表示搜索全部可搜索字段
+    bool case_sensitive = false;
+    std::vector<int64_t> tag_ids;           // 按标签过滤（OR 语义：包含任一即匹配）
+                                            // 为空时不按标签过滤
 };
 ```
 

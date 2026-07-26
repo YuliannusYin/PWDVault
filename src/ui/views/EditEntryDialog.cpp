@@ -9,6 +9,7 @@
 #include "IpcClient.h"
 #include "IconKit.h"
 #include "StrengthUtil.h"
+#include "TagInputWidget.h"
 
 #include <QCloseEvent>
 #include <QDateTime>
@@ -118,10 +119,11 @@ void EditEntryDialog::build_ui() {
     body_layout->setContentsMargins(24, 20, 24, 20);
     body_layout->setSpacing(16);
 
-    // 字段标签样式
+    // 字段标签样式（支持必填 * 标记）
     auto make_label = [body](const QString& text) {
         auto* lbl = new QLabel(text, body);
         lbl->setProperty("cssClass", QStringLiteral("fieldLabel"));
+        lbl->setTextFormat(Qt::RichText);
         return lbl;
     };
 
@@ -145,20 +147,32 @@ void EditEntryDialog::build_ui() {
         return container;
     };
 
-    // 网站
-    body_layout->addWidget(make_label(QStringLiteral("网站")));
-    make_line_edit(website_edit_, QStringLiteral(":/icons/globe.svg"));
-    website_edit_->setText(QString::fromStdString(entry_.website));
-    body_layout->addWidget(website_edit_->parentWidget());
+    // ── *条目名（必填） ──
+    body_layout->addWidget(make_label(
+        QStringLiteral("条目名 <span style=\"color:#f56363;\">*</span>")));
+    body_layout->addWidget(make_line_edit(entry_name_edit_,
+        QStringLiteral(":/icons/database.svg")));
+    entry_name_edit_->setText(QString::fromStdString(entry_.entry_name));
+    entry_name_edit_->setPlaceholderText(QStringLiteral("如：GitHub 个人账号"));
 
-    // 用户名
+    // ── 用户名（可选） ──
     body_layout->addWidget(make_label(QStringLiteral("用户名")));
-    make_line_edit(username_edit_, QStringLiteral(":/icons/at-sign.svg"));
+    body_layout->addWidget(make_line_edit(username_edit_,
+        QStringLiteral(":/icons/at-sign.svg")));
     username_edit_->setText(QString::fromStdString(entry_.username));
-    body_layout->addWidget(username_edit_->parentWidget());
+    username_edit_->setPlaceholderText(QStringLiteral("显示名，如：张三"));
 
-    // 密码（带可见性 + 生成）
-    body_layout->addWidget(make_label(QStringLiteral("密码")));
+    // ── *账号（必填） ──
+    body_layout->addWidget(make_label(
+        QStringLiteral("账号 <span style=\"color:#f56363;\">*</span>")));
+    body_layout->addWidget(make_line_edit(account_edit_,
+        QStringLiteral(":/icons/at-sign.svg")));
+    account_edit_->setText(QString::fromStdString(entry_.account));
+    account_edit_->setPlaceholderText(QStringLiteral("登录账号或邮箱"));
+
+    // ── *密码（必填，带可见性 + 生成） ──
+    body_layout->addWidget(make_label(
+        QStringLiteral("密码 <span style=\"color:#f56363;\">*</span>")));
     auto* pwd_container = new QFrame(body);
     pwd_container->setFixedHeight(40);
     pwd_container->setProperty("cssClass", QStringLiteral("inputField"));
@@ -204,19 +218,36 @@ void EditEntryDialog::build_ui() {
     auto* strength_row = new QHBoxLayout();
     strength_row->setContentsMargins(0, 4, 0, 0);
     strength_row->setSpacing(8);
-    // 用 4 段 QFrame 模拟分段强度条
-    // 简化：使用一个 QLabel 显示文字
     strength_label_ = new QLabel(body);
     strength_label_->setProperty("cssClass", QStringLiteral("caption"));
     strength_row->addWidget(strength_label_);
     strength_row->addStretch(1);
     body_layout->addLayout(strength_row);
 
-    // 备注
-    body_layout->addWidget(make_label(QStringLiteral("备注")));
+    // ── 网站（可选） ──
+    body_layout->addWidget(make_label(QStringLiteral("网站")));
+    body_layout->addWidget(make_line_edit(website_edit_,
+        QStringLiteral(":/icons/globe.svg")));
+    website_edit_->setText(QString::fromStdString(entry_.website));
+    website_edit_->setPlaceholderText(QStringLiteral("example.com"));
+
+    // ── 标签（可选，芯片流式输入） ──
+    body_layout->addWidget(make_label(QStringLiteral("标签")));
+    tag_input_ = new TagInputWidget(body);
+    tag_input_->setProperty("cssClass", QStringLiteral("tagInput"));
+    body_layout->addWidget(tag_input_);
+    // 预填已有标签
+    tag_input_->set_selected_tags(entry_.tags);
+    // 加载已有标签供补全
+    refresh_existing_tags();
+
+    // ── 备注（可选，markdown 源码） ──
+    body_layout->addWidget(make_label(QStringLiteral("备注（markdown）")));
     note_edit_ = new QPlainTextEdit(body);
     note_edit_->setPlainText(QString::fromStdString(entry_.note));
     note_edit_->setFixedHeight(96);
+    note_edit_->setPlaceholderText(
+        QStringLiteral("可选：支持 markdown 语法（# 标题、**粗体**、`代码`、- 列表）"));
     body_layout->addWidget(note_edit_);
 
     // 更新时间行
@@ -294,7 +325,7 @@ void EditEntryDialog::build_ui() {
 
     // 初始强度
     update_strength(QString::fromStdString(entry_.password));
-    website_edit_->setFocus();
+    entry_name_edit_->setFocus();
 }
 
 void EditEntryDialog::closeEvent(QCloseEvent* event) {
@@ -358,18 +389,21 @@ void EditEntryDialog::on_save_clicked() {
         return;
     }
 
-    const QString website = website_edit_->text().trimmed();
+    const QString entry_name = entry_name_edit_->text().trimmed();
+    const QString account = account_edit_->text().trimmed();
     const QString username = username_edit_->text().trimmed();
+    const QString website = website_edit_->text().trimmed();
     const QString password = password_edit_->text();
 
-    if (website.isEmpty()) {
-        set_error(QStringLiteral("网站不能为空。"));
-        website_edit_->setFocus();
+    // 必填校验：entry_name / account / password
+    if (entry_name.isEmpty()) {
+        set_error(QStringLiteral("条目名不能为空。"));
+        entry_name_edit_->setFocus();
         return;
     }
-    if (username.isEmpty()) {
-        set_error(QStringLiteral("用户名不能为空。"));
-        username_edit_->setFocus();
+    if (account.isEmpty()) {
+        set_error(QStringLiteral("账号不能为空。"));
+        account_edit_->setFocus();
         return;
     }
     if (password.isEmpty()) {
@@ -379,10 +413,15 @@ void EditEntryDialog::on_save_clicked() {
     }
 
     core::PasswordEntry updated = entry_;
-    updated.website = website.toStdString();
+    updated.entry_name = entry_name.toStdString();
+    updated.account = account.toStdString();
     updated.username = username.toStdString();
     updated.password = password.toStdString();
+    updated.website = website.toStdString();
     updated.note = note_edit_->toPlainText().toStdString();
+    if (tag_input_) {
+        updated.tags = tag_input_->selected_tags();
+    }
 
     auto result = client_->update_entry(updated);
     if (result.ok()) {
@@ -432,6 +471,14 @@ void EditEntryDialog::set_error(const QString& message) {
     if (!error_label_) return;
     error_label_->setText(message);
     error_label_->setVisible(!message.isEmpty());
+}
+
+void EditEntryDialog::refresh_existing_tags() {
+    if (!client_ || !tag_input_) return;
+    auto result = client_->list_tags();
+    if (result.ok()) {
+        tag_input_->set_existing_tags(result.value().tags);
+    }
 }
 
 }  // namespace pwdvault::ui

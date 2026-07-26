@@ -6,9 +6,12 @@
 // =============================================================================
 #include "PasswordBookView.h"
 #include "EditEntryDialog.h"
+#include "FlowLayout.h"
 #include "IpcClient.h"
 #include "IconKit.h"
+#include "MarkdownUtil.h"
 #include "StrengthUtil.h"
+#include "Theme.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -27,6 +30,7 @@
 #include <QScrollArea>
 #include <QString>
 #include <QStyle>
+#include <QTextBrowser>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -46,19 +50,13 @@ QString format_time(int64_t ts) {
         .toString(QStringLiteral("yyyy-MM-dd HH:mm"));
 }
 
-/// 取网站名首字母（大写）作为头像字符。
-QString avatar_letter(const std::string& website) {
-    if (website.empty()) return QStringLiteral("?");
-    // 跳过协议前缀
-    std::string s = website;
-    for (const char* prefix : {"https://", "http://", "www."}) {
-        const size_t len = std::char_traits<char>::length(prefix);
-        if (s.size() > len && s.compare(0, len, prefix) == 0) {
-            s = s.substr(len);
-        }
-    }
+/// 取字符串首字母（大写）作为头像字符。
+/// 优先使用 entry_name，回退到 account / website。
+QString avatar_letter(const std::string& text) {
+    std::string s = text;
     if (s.empty()) return QStringLiteral("?");
     QChar ch = QChar::fromLatin1(s[0]).toUpper();
+    if (!ch.isLetterOrNumber()) return QStringLiteral("?");
     return ch;
 }
 
@@ -91,6 +89,20 @@ QPushButton* make_small_icon_btn(const QString& svg_path, IconRole role,
     return btn;
 }
 
+/// 创建只读标签芯片（详情区展示用，无删除按钮）。
+QFrame* make_readonly_chip(const QString& name, QWidget* parent) {
+    auto* chip = new QFrame(parent);
+    chip->setProperty("cssClass", QStringLiteral("tagChip"));
+    auto* hl = new QHBoxLayout(chip);
+    hl->setContentsMargins(8, 2, 8, 2);
+    hl->setSpacing(0);
+    auto* lbl = new QLabel(name, chip);
+    lbl->setObjectName(QStringLiteral("tagChipName"));
+    lbl->setProperty("cssClass", QStringLiteral("tagChipName"));
+    hl->addWidget(lbl);
+    return chip;
+}
+
 }  // namespace
 
 PasswordBookView::PasswordBookView(IpcClient* client, QWidget* parent)
@@ -98,6 +110,12 @@ PasswordBookView::PasswordBookView(IpcClient* client, QWidget* parent)
 {
     build_ui();
     set_detail_actions_enabled(false);
+    // 主题切换后重新应用 primary 按钮内联样式
+    if (Theme* t = Theme::instance()) {
+        connect(t, &Theme::theme_changed, this, [this]() {
+            apply_primary_button_style(edit_btn_);
+        });
+    }
 }
 
 PasswordBookView::~PasswordBookView() = default;
@@ -127,7 +145,7 @@ void PasswordBookView::build_ui() {
     search_layout->addWidget(search_icon);
 
     search_edit_ = new QLineEdit(search_container);
-    search_edit_->setPlaceholderText(QStringLiteral("搜索网站、用户名、备注…"));
+    search_edit_->setPlaceholderText(QStringLiteral("搜索条目名、账号、用户名、备注…"));
     search_edit_->setProperty("cssClass", QStringLiteral("inlineEdit"));
     search_layout->addWidget(search_edit_, 1);
     search_row->addWidget(search_container, 1);
@@ -136,8 +154,10 @@ void PasswordBookView::build_ui() {
     field_combo_ = new QComboBox(this);
     field_combo_->setFixedSize(140, 40);
     field_combo_->addItem(QStringLiteral("全部字段"), QStringLiteral("all"));
-    field_combo_->addItem(QStringLiteral("网站"), QStringLiteral("website"));
+    field_combo_->addItem(QStringLiteral("条目名"), QStringLiteral("entry_name"));
+    field_combo_->addItem(QStringLiteral("账号"), QStringLiteral("account"));
     field_combo_->addItem(QStringLiteral("用户名"), QStringLiteral("username"));
+    field_combo_->addItem(QStringLiteral("网站"), QStringLiteral("website"));
     field_combo_->addItem(QStringLiteral("备注"), QStringLiteral("note"));
     search_row->addWidget(field_combo_);
 
@@ -203,10 +223,6 @@ void PasswordBookView::build_ui() {
     layout->addLayout(md_layout, 1);
 
     // ── 详情头部（默认隐藏，load_detail 时显示） ──
-    // 这里预先创建所有详情控件，但默认不显示。load_detail 时填入数据并显示。
-    // 使用一个 header_frame 包裹头部和字段网格，作为整体显示/隐藏。
-    // 为简化实现，把详情控件直接放在 detail_layout 顶部，通过 setVisible 控制可见性。
-
     // 头部 row
     auto* header_row = new QHBoxLayout();
     header_row->setSpacing(16);
@@ -229,10 +245,10 @@ void PasswordBookView::build_ui() {
     header_row->addLayout(title_col, 1);
 
     // 头部右侧操作按钮
-    copy_user_btn_ = make_icon_btn(
+    copy_account_btn_ = make_icon_btn(
         QStringLiteral(":/icons/copy.svg"),
-        IconRole::Normal, QStringLiteral("复制用户名"), detail_container_);
-    header_row->addWidget(copy_user_btn_);
+        IconRole::Normal, QStringLiteral("复制账号"), detail_container_);
+    header_row->addWidget(copy_account_btn_);
 
     copy_pwd_btn_ = make_icon_btn(
         QStringLiteral(":/icons/copy.svg"),
@@ -245,21 +261,19 @@ void PasswordBookView::build_ui() {
     edit_btn_->setText(QStringLiteral("编辑"));
     edit_btn_->setCursor(Qt::PointingHandCursor);
     edit_btn_->setFixedHeight(40);
-    edit_btn_->setProperty("cssClass", QStringLiteral("primary"));
+    apply_primary_button_style(edit_btn_);
     header_row->addWidget(edit_btn_);
 
     delete_btn_ = make_icon_btn(
         QStringLiteral(":/icons/trash-2.svg"),
         IconRole::Danger, QStringLiteral("删除"), detail_container_);
-    // 保持 cssClass="icon" 以维持 36x36 透明图标按钮样式，
-    // 图标本身已用 IconRole::Danger 着色为红色，无需再用 danger 按钮样式。
     header_row->addWidget(delete_btn_);
 
     detail_layout->addLayout(header_row);
 
     detail_layout->addSpacing(28);
 
-    // 字段网格（网站 / 用户名 / 密码 / 备注 / 时间）
+    // 字段网格
     auto* fields_layout = new QVBoxLayout();
     fields_layout->setSpacing(16);
 
@@ -280,6 +294,7 @@ void PasswordBookView::build_ui() {
         value_label = new QLabel(row);
         value_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
         value_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        value_label->setWordWrap(true);
         value_row->addWidget(value_label, 1);
         copy_btn = make_small_icon_btn(
             QStringLiteral(":/icons/copy.svg"),
@@ -290,10 +305,14 @@ void PasswordBookView::build_ui() {
         return row;
     };
 
-    // 网站
-    add_field_row(QStringLiteral("网站"), field_website_, copy_website_btn_);
+    // 条目名
+    add_field_row(QStringLiteral("条目名"), field_entry_name_, copy_entry_name_btn_);
     // 用户名
     add_field_row(QStringLiteral("用户名"), field_username_, copy_user_field_btn_);
+    // 账号
+    add_field_row(QStringLiteral("账号"), field_account_, copy_account_field_btn_);
+    // 网站
+    add_field_row(QStringLiteral("网站"), field_website_, copy_website_btn_);
 
     // 密码行（特殊：带可见性切换 + 强度 badge）
     auto* pwd_row = new QFrame(detail_container_);
@@ -329,7 +348,24 @@ void PasswordBookView::build_ui() {
     pwd_row_layout->addLayout(pwd_value_row);
     fields_layout->addWidget(pwd_row);
 
-    // 备注
+    // 标签行（只读芯片流式展示）
+    auto* tags_row = new QFrame(detail_container_);
+    tags_row->setProperty("cssClass", QStringLiteral("fieldRow"));
+    auto* tags_row_layout = new QVBoxLayout(tags_row);
+    tags_row_layout->setContentsMargins(0, 0, 0, 12);
+    tags_row_layout->setSpacing(6);
+
+    auto* tags_caption = new QLabel(QStringLiteral("标签"), tags_row);
+    tags_caption->setProperty("cssClass", QStringLiteral("fieldCaption"));
+    tags_row_layout->addWidget(tags_caption);
+
+    field_tags_container_ = new QWidget(tags_row);
+    field_tags_container_->setStyleSheet(QStringLiteral("background: transparent;"));
+    field_tags_layout_ = new FlowLayout(field_tags_container_, /*margin=*/0, /*hSpacing=*/6, /*vSpacing=*/6);
+    tags_row_layout->addWidget(field_tags_container_);
+    fields_layout->addWidget(tags_row);
+
+    // 备注（markdown 渲染）
     auto* note_row = new QFrame(detail_container_);
     note_row->setProperty("cssClass", QStringLiteral("fieldRow"));
     auto* note_row_layout = new QVBoxLayout(note_row);
@@ -340,10 +376,11 @@ void PasswordBookView::build_ui() {
     note_caption->setProperty("cssClass", QStringLiteral("fieldCaption"));
     note_row_layout->addWidget(note_caption);
 
-    field_note_ = new QLabel(note_row);
-    field_note_->setWordWrap(true);
-    field_note_->setProperty("cssClass", QStringLiteral("fieldLabel"));
-    field_note_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    field_note_ = new QTextBrowser(note_row);
+    field_note_->setOpenExternalLinks(true);
+    field_note_->setProperty("cssClass", QStringLiteral("markdownView"));
+    field_note_->setMinimumHeight(60);
+    field_note_->setMaximumHeight(240);
     note_row_layout->addWidget(field_note_);
     fields_layout->addWidget(note_row);
 
@@ -363,7 +400,7 @@ void PasswordBookView::build_ui() {
 
     auto* updated_col = new QVBoxLayout();
     updated_col->setSpacing(6);
-    auto* updated_caption = new QLabel(QStringLiteral("更新时间"), detail_container_);
+    auto* updated_caption = new QLabel(QStringLiteral("修改时间"), detail_container_);
     updated_caption->setProperty("cssClass", QStringLiteral("fieldCaption"));
     updated_col->addWidget(updated_caption);
     field_updated_ = new QLabel(detail_container_);
@@ -398,18 +435,36 @@ void PasswordBookView::build_ui() {
             this, &PasswordBookView::on_refresh_clicked);
     connect(list_, &QListWidget::currentItemChanged,
             this, &PasswordBookView::on_list_item_changed);
-    connect(copy_user_btn_, &QPushButton::clicked,
-            this, &PasswordBookView::on_copy_username_clicked);
+    connect(copy_account_btn_, &QPushButton::clicked,
+            this, &PasswordBookView::on_copy_account_clicked);
     connect(copy_pwd_btn_, &QPushButton::clicked,
             this, &PasswordBookView::on_copy_password_clicked);
+    connect(copy_entry_name_btn_, &QPushButton::clicked,
+            this, [this]() {
+                if (current_id_ == 0) return;
+                const auto* entry = current_entry();
+                if (!entry) return;
+                QApplication::clipboard()->setText(
+                    QString::fromStdString(entry->entry_name));
+            });
+    connect(copy_account_field_btn_, &QPushButton::clicked,
+            this, &PasswordBookView::on_copy_account_clicked);
+    connect(copy_user_field_btn_, &QPushButton::clicked,
+            this, [this]() {
+                if (current_id_ == 0) return;
+                const auto* entry = current_entry();
+                if (!entry) return;
+                QApplication::clipboard()->setText(
+                    QString::fromStdString(entry->username));
+            });
     connect(copy_website_btn_, &QPushButton::clicked,
             this, [this]() {
                 if (current_id_ == 0) return;
+                const auto* entry = current_entry();
+                if (!entry) return;
                 QApplication::clipboard()->setText(
-                    QString::fromStdString(current_entry()->website));
+                    QString::fromStdString(entry->website));
             });
-    connect(copy_user_field_btn_, &QPushButton::clicked,
-            this, &PasswordBookView::on_copy_username_clicked);
     connect(copy_pwd_field_btn_, &QPushButton::clicked,
             this, &PasswordBookView::on_copy_password_clicked);
     connect(toggle_pwd_btn_, &QPushButton::clicked,
@@ -455,10 +510,14 @@ void PasswordBookView::on_search_clicked() {
     query.case_sensitive = false;
 
     const QString field = field_combo_->currentData().toString();
-    if (field == QStringLiteral("website")) {
-        query.fields = {"website"};
+    if (field == QStringLiteral("entry_name")) {
+        query.fields = {"entry_name"};
+    } else if (field == QStringLiteral("account")) {
+        query.fields = {"account"};
     } else if (field == QStringLiteral("username")) {
         query.fields = {"username"};
+    } else if (field == QStringLiteral("website")) {
+        query.fields = {"website"};
     } else if (field == QStringLiteral("note")) {
         query.fields = {"note"};
     }
@@ -499,9 +558,11 @@ void PasswordBookView::populate_list(const std::vector<core::PasswordEntry>& new
     for (const auto& e : entries_) {
         auto* item = new QListWidgetItem(list_);
         item->setData(Qt::UserRole, static_cast<qint64>(e.id));
-        item->setSizeHint(QSize(320, 60));
+        const bool has_tags = !e.tags.empty();
+        // 列表项高度：有标签时 72px（条目名 + 标签 chips 两行），无标签 60px
+        item->setSizeHint(QSize(320, has_tags ? 72 : 60));
 
-        // 自定义 item widget：头像 + 名称 + 用户名 + chevron
+        // 自定义 item widget：头像 + 条目名 + 标签 chips + chevron
         auto* widget = new QWidget(list_);
         widget->setStyleSheet(QStringLiteral("background: transparent;"));
         auto* row = new QHBoxLayout(widget);
@@ -512,30 +573,56 @@ void PasswordBookView::populate_list(const std::vector<core::PasswordEntry>& new
         avatar->setFixedSize(40, 40);
         avatar->setAlignment(Qt::AlignCenter);
         avatar->setProperty("cssClass", QStringLiteral("avatar"));
-        avatar->setText(avatar_letter(e.website));
-        row->addWidget(avatar);
+        // 头像字符优先用 entry_name，回退到 account / website
+        std::string avatar_src = e.entry_name;
+        if (avatar_src.empty()) avatar_src = e.account;
+        if (avatar_src.empty()) avatar_src = e.website;
+        avatar->setText(avatar_letter(avatar_src));
+        // 显式 AlignVCenter 修复 avatar 在 row 中可能偏移的问题
+        row->addWidget(avatar, 0, Qt::AlignVCenter);
 
         auto* text_col = new QVBoxLayout();
-        text_col->setSpacing(2);
+        text_col->setSpacing(4);
+        // 主标题：条目名（回退到账号 → website）
+        std::string title_src = e.entry_name;
+        if (title_src.empty()) title_src = e.account;
+        if (title_src.empty()) title_src = e.website;
         auto* name_label = new QLabel(
-            QString::fromStdString(e.website), widget);
+            QString::fromStdString(title_src), widget);
         name_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
-        // 截断过长文本
         name_label->setWordWrap(false);
         text_col->addWidget(name_label);
 
-        auto* user_label = new QLabel(
-            QString::fromStdString(e.username), widget);
-        user_label->setProperty("cssClass", QStringLiteral("caption"));
-        user_label->setWordWrap(false);
-        text_col->addWidget(user_label);
+        // 标签 chips（仅当有标签时显示）
+        if (has_tags) {
+            auto* tags_row = new QHBoxLayout();
+            tags_row->setSpacing(4);
+            tags_row->setContentsMargins(0, 0, 0, 0);
+            // 限制最多展示 3 个 chip，避免行宽溢出
+            const size_t max_show = 3;
+            for (size_t i = 0; i < e.tags.size() && i < max_show; ++i) {
+                auto* chip = new QLabel(
+                    QString::fromStdString(e.tags[i].name), widget);
+                chip->setProperty("cssClass", QStringLiteral("listTagChip"));
+                tags_row->addWidget(chip);
+            }
+            if (e.tags.size() > max_show) {
+                auto* more = new QLabel(
+                    QStringLiteral("+%1").arg(e.tags.size() - max_show),
+                    widget);
+                more->setProperty("cssClass", QStringLiteral("listTagMore"));
+                tags_row->addWidget(more);
+            }
+            tags_row->addStretch(1);
+            text_col->addLayout(tags_row);
+        }
         text_col->addStretch(1);
         row->addLayout(text_col, 1);
 
         auto* chevron = new QLabel(widget);
         chevron->setPixmap(tinted_pixmap(QStringLiteral(":/icons/chevron-right.svg"), IconRole::Normal, QSize(16, 16)));
         chevron->setProperty("cssClass", QStringLiteral("inlineIcon"));
-        row->addWidget(chevron);
+        row->addWidget(chevron, 0, Qt::AlignVCenter);
 
         list_->setItemWidget(item, widget);
     }
@@ -566,20 +653,30 @@ void PasswordBookView::clear_detail() {
     if (detail_avatar_) detail_avatar_->hide();
     if (detail_title_) detail_title_->hide();
     if (detail_subtitle_) detail_subtitle_->hide();
-    if (copy_user_btn_) copy_user_btn_->hide();
+    if (copy_account_btn_) copy_account_btn_->hide();
     if (copy_pwd_btn_) copy_pwd_btn_->hide();
     if (edit_btn_) edit_btn_->hide();
     if (delete_btn_) delete_btn_->hide();
-    if (field_website_ && field_website_->parentWidget()) field_website_->parentWidget()->hide();
-    if (field_username_ && field_username_->parentWidget()) field_username_->parentWidget()->hide();
-    if (field_password_ && field_password_->parentWidget()) field_password_->parentWidget()->hide();
+    auto hide_field_row = [](QLabel* lbl) {
+        if (lbl && lbl->parentWidget()) lbl->parentWidget()->hide();
+    };
+    hide_field_row(field_entry_name_);
+    hide_field_row(field_account_);
+    hide_field_row(field_username_);
+    hide_field_row(field_website_);
+    hide_field_row(field_password_);
     if (field_note_ && field_note_->parentWidget()) field_note_->parentWidget()->hide();
+    if (field_tags_container_ && field_tags_container_->parentWidget()) {
+        field_tags_container_->parentWidget()->hide();
+    }
     if (field_created_) field_created_->hide();
     if (field_updated_) field_updated_->hide();
     if (strength_badge_) strength_badge_->hide();
     if (toggle_pwd_btn_) toggle_pwd_btn_->hide();
-    if (copy_website_btn_) copy_website_btn_->hide();
+    if (copy_entry_name_btn_) copy_entry_name_btn_->hide();
+    if (copy_account_field_btn_) copy_account_field_btn_->hide();
     if (copy_user_field_btn_) copy_user_field_btn_->hide();
+    if (copy_website_btn_) copy_website_btn_->hide();
     if (copy_pwd_field_btn_) copy_pwd_field_btn_->hide();
     if (open_external_btn_) open_external_btn_->hide();
     set_detail_actions_enabled(false);
@@ -592,23 +689,33 @@ void PasswordBookView::load_detail(const core::PasswordEntry& entry) {
     empty_hint_->hide();
 
     // 头部
-    detail_avatar_->setText(avatar_letter(entry.website));
+    std::string avatar_src = entry.entry_name;
+    if (avatar_src.empty()) avatar_src = entry.account;
+    if (avatar_src.empty()) avatar_src = entry.website;
+    detail_avatar_->setText(avatar_letter(avatar_src));
     detail_avatar_->show();
-    detail_title_->setText(QString::fromStdString(entry.website));
+
+    // 主标题：条目名
+    detail_title_->setText(QString::fromStdString(entry.entry_name));
     detail_title_->show();
-    detail_subtitle_->setText(QString::fromStdString(entry.username));
+    // 副标题：账号
+    detail_subtitle_->setText(QString::fromStdString(entry.account));
     detail_subtitle_->show();
 
-    copy_user_btn_->show();
+    copy_account_btn_->show();
     copy_pwd_btn_->show();
     edit_btn_->show();
     delete_btn_->show();
 
-    // 字段
-    field_website_->setText(QString::fromStdString(entry.website));
-    field_website_->parentWidget()->show();
+    // 字段（顺序与 UI 布局保持一致：条目名→用户名→账号→网站）
+    field_entry_name_->setText(QString::fromStdString(entry.entry_name));
+    field_entry_name_->parentWidget()->show();
     field_username_->setText(QString::fromStdString(entry.username));
     field_username_->parentWidget()->show();
+    field_account_->setText(QString::fromStdString(entry.account));
+    field_account_->parentWidget()->show();
+    field_website_->setText(QString::fromStdString(entry.website));
+    field_website_->parentWidget()->show();
 
     // 密码：默认掩码
     field_password_->setText(QStringLiteral("••••••••••••"));
@@ -635,11 +742,32 @@ void PasswordBookView::load_detail(const core::PasswordEntry& entry) {
         strength_badge_->hide();
     }
 
-    // 备注
-    const QString note_text = entry.note.empty()
-        ? QStringLiteral("（无）")
-        : QString::fromStdString(entry.note);
-    field_note_->setText(note_text);
+    // 标签：清空旧芯片，按 entry.tags 重建
+    while (field_tags_layout_->count() > 0) {
+        QLayoutItem* item = field_tags_layout_->takeAt(0);
+        if (!item) break;
+        if (QWidget* w = item->widget()) w->deleteLater();
+        delete item;
+    }
+    if (entry.tags.empty()) {
+        // 无标签时隐藏整个标签行
+        field_tags_container_->parentWidget()->hide();
+    } else {
+        for (const auto& tag : entry.tags) {
+            auto* chip = make_readonly_chip(QString::fromStdString(tag.name),
+                                            field_tags_container_);
+            field_tags_layout_->addWidget(chip);
+        }
+        field_tags_container_->parentWidget()->show();
+    }
+
+    // 备注：markdown → HTML 渲染
+    //   空备注用 <p class="muted"> 显示「(无)」，由 QSS 接管颜色，深浅主题自动适配。
+    if (entry.note.empty()) {
+        field_note_->setHtml(QStringLiteral("<p class=\"muted\">(无)</p>"));
+    } else {
+        field_note_->setHtml(markdown_to_html(entry.note));
+    }
     field_note_->parentWidget()->show();
 
     // 时间
@@ -648,25 +776,33 @@ void PasswordBookView::load_detail(const core::PasswordEntry& entry) {
     field_updated_->setText(format_time(entry.updated_at));
     field_updated_->show();
 
-    copy_website_btn_->show();
+    copy_entry_name_btn_->show();
+    copy_account_field_btn_->show();
     copy_user_field_btn_->show();
+    copy_website_btn_->show();
 
     // 外部链接
-    open_external_btn_->setText(
-        QStringLiteral("打开 %1").arg(QString::fromStdString(entry.website)));
-    open_external_btn_->show();
+    if (entry.website.empty()) {
+        open_external_btn_->hide();
+    } else {
+        open_external_btn_->setText(
+            QStringLiteral("打开 %1").arg(QString::fromStdString(entry.website)));
+        open_external_btn_->show();
+    }
 
     set_detail_actions_enabled(true);
 }
 
 void PasswordBookView::set_detail_actions_enabled(bool enabled) {
-    if (copy_user_btn_) copy_user_btn_->setEnabled(enabled);
+    if (copy_account_btn_) copy_account_btn_->setEnabled(enabled);
     if (copy_pwd_btn_) copy_pwd_btn_->setEnabled(enabled);
     if (edit_btn_) edit_btn_->setEnabled(enabled);
     if (delete_btn_) delete_btn_->setEnabled(enabled);
     if (toggle_pwd_btn_) toggle_pwd_btn_->setEnabled(enabled);
-    if (copy_website_btn_) copy_website_btn_->setEnabled(enabled);
+    if (copy_entry_name_btn_) copy_entry_name_btn_->setEnabled(enabled);
+    if (copy_account_field_btn_) copy_account_field_btn_->setEnabled(enabled);
     if (copy_user_field_btn_) copy_user_field_btn_->setEnabled(enabled);
+    if (copy_website_btn_) copy_website_btn_->setEnabled(enabled);
     if (copy_pwd_field_btn_) copy_pwd_field_btn_->setEnabled(enabled);
     if (open_external_btn_) open_external_btn_->setEnabled(enabled);
 }
@@ -699,10 +835,10 @@ void PasswordBookView::on_list_item_changed(QListWidgetItem* current, QListWidge
 // 操作
 // ---------------------------------------------------------------------------
 
-void PasswordBookView::on_copy_username_clicked() {
+void PasswordBookView::on_copy_account_clicked() {
     const auto* entry = current_entry();
     if (!entry) return;
-    QApplication::clipboard()->setText(QString::fromStdString(entry->username));
+    QApplication::clipboard()->setText(QString::fromStdString(entry->account));
 }
 
 void PasswordBookView::on_copy_password_clicked() {
@@ -768,7 +904,8 @@ void PasswordBookView::on_delete_clicked() {
     if (current_id_ == 0) return;
     const auto* entry = current_entry();
     const QString name = entry
-        ? QString::fromStdString(entry->website)
+        ? QString::fromStdString(entry->entry_name.empty()
+              ? entry->account : entry->entry_name)
         : QStringLiteral("id=%1").arg(current_id_);
 
     const auto answer = QMessageBox::question(
@@ -794,6 +931,7 @@ void PasswordBookView::on_delete_clicked() {
 void PasswordBookView::on_open_external_clicked() {
     const auto* entry = current_entry();
     if (!entry) return;
+    if (entry->website.empty()) return;
     QString url = QString::fromStdString(entry->website);
     if (!url.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive) &&
         !url.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)) {

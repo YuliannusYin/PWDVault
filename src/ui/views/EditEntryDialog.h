@@ -5,7 +5,8 @@
 // PwdVault 编辑条目对话框（新设计）。模态遮罩弹窗：
 //   - 半透明遮罩层（rgba(0,0,0,0.55)）覆盖父窗口
 //   - 560px 居中卡片：头部（pencil 图标 + 标题 + X 关闭）
-//                       + 体（网站/用户名/密码（带可见性+生成）+ 备注 + 更新时间）
+//                       + 体（*条目名 / 用户名 / *账号 / *密码（带可见性+生成）
+//                            / 网站 / 标签 / 备注（markdown） / 更新时间）
 //                       + 尾部（取消 + 保存修改）
 //
 // 预填已有数据，保存时调用 client->update_entry。
@@ -28,6 +29,7 @@ class QTimer;
 namespace pwdvault::ui {
 
 class IpcClient;
+class TagInputWidget;
 
 class EditEntryDialog : public QDialog {
     Q_OBJECT
@@ -55,15 +57,20 @@ private:
     void build_ui();
     void update_strength(const QString& password);
     void set_error(const QString& message);
+    /// 从 service 加载全部已知标签，刷新 TagInputWidget 的补全列表。
+    void refresh_existing_tags();
 
     IpcClient* client_;
     core::PasswordEntry entry_;
 
     QLabel* error_label_ = nullptr;
-    QLineEdit* website_edit_ = nullptr;
-    QLineEdit* username_edit_ = nullptr;
-    QLineEdit* password_edit_ = nullptr;
-    QPlainTextEdit* note_edit_ = nullptr;
+    QLineEdit* entry_name_edit_ = nullptr;  ///< *必填* 条目显示标题
+    QLineEdit* account_edit_ = nullptr;     ///< *必填* 登录账号
+    QLineEdit* username_edit_ = nullptr;    ///< 可选 显示名
+    QLineEdit* password_edit_ = nullptr;    ///< *必填* 明文密码
+    QLineEdit* website_edit_ = nullptr;    ///< 可选 站点 URL
+    TagInputWidget* tag_input_ = nullptr;  ///< 标签芯片输入
+    QPlainTextEdit* note_edit_ = nullptr;    ///< 备注（markdown 源码）
     QPushButton* visibility_btn_ = nullptr;
     QPushButton* generate_btn_ = nullptr;
     QPushButton* save_button_ = nullptr;

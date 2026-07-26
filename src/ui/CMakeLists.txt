@@ -13,6 +13,8 @@ add_executable(pwdvault-ui WIN32
     Theme.cpp
     IconKit.cpp
     StrengthUtil.cpp
+    FlowLayout.cpp
+    MarkdownUtil.cpp
     views/UnlockView.cpp
     views/ProgramPasswordDialog.cpp
     views/PasswordBookView.cpp
@@ -21,6 +23,7 @@ add_executable(pwdvault-ui WIN32
     views/SettingsView.cpp
     views/EditEntryDialog.cpp
     views/GeneratorHistoryDialog.cpp
+    views/TagInputWidget.cpp
     resources/resources.qrc
     pwdvault-ui.rc      # Windows 应用程序图标资源（嵌入多尺寸 ICO）
 )

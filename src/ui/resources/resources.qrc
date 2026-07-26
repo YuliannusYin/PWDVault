@@ -42,6 +42,8 @@
     <file alias="icons/shield-off.svg">icons/shield-off.svg</file>
     <file alias="icons/sun.svg">icons/sun.svg</file>
     <file alias="icons/trash-2.svg">icons/trash-2.svg</file>
+    <file alias="icons/user.svg">icons/user.svg</file>
+    <file alias="icons/tag.svg">icons/tag.svg</file>
     <file alias="icons/wand-2.svg">icons/wand-2.svg</file>
     <file alias="icons/x.svg">icons/x.svg</file>
   </qresource>

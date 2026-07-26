@@ -156,12 +156,53 @@ core::Error StorageEngine::exec_sql(const char* sql) {
 }
 
 core::Error StorageEngine::init_schema() {
+    // 1. 确保 settings 表存在，再读 schema_version 决定是否需要重建。
+    core::Error err = exec_sql(
+        "CREATE TABLE IF NOT EXISTS settings ("
+        "  key   TEXT PRIMARY KEY,"
+        "  value TEXT NOT NULL"
+        ");");
+    if (!err.ok()) return err;
+
+    // 读取旧版本号（不存在时为空字符串）
+    std::string current_version;
+    {
+        // 直接走 exec 后用 prepared 读，避免重复实现
+        sqlite3_stmt* probe = nullptr;
+        int rc = sqlite3_prepare_v2(db_.get(),
+            "SELECT value FROM settings WHERE key='schema_version';",
+            -1, &probe, nullptr);
+        if (rc == SQLITE_OK && probe != nullptr) {
+            StmtHandle sp(probe);
+            if (sqlite3_step(sp.get()) == SQLITE_ROW) {
+                const unsigned char* v = sqlite3_column_text(sp.get(), 0);
+                if (v) current_version.assign(reinterpret_cast<const char*>(v));
+            }
+        }
+    }
+
+    // 当前目标版本。空（全新库）或小于 2 时，按 v2 schema 重建。
+    constexpr const char* kTargetVersion = "2";
+    if (current_version != kTargetVersion) {
+        // 清空旧表（按用户决策：不迁移历史数据，清空重建）
+        // generated_passwords 表保持不变（生成器历史记录不涉及本次重构）
+        err = exec_sql("DROP TABLE IF EXISTS entry_tags;");
+        if (!err.ok()) return err;
+        err = exec_sql("DROP TABLE IF EXISTS tags;");
+        if (!err.ok()) return err;
+        err = exec_sql("DROP TABLE IF EXISTS passwords;");
+        if (!err.ok()) return err;
+    }
+
+    // passwords 表（v2 schema）
     const char* kCreateTable = R"SQL(
         CREATE TABLE IF NOT EXISTS passwords (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            website     TEXT NOT NULL,
-            username    TEXT NOT NULL,
+            entry_name  TEXT NOT NULL,
+            account     TEXT NOT NULL,
+            username    TEXT,
             password    BLOB NOT NULL,
+            website     TEXT,
             note        TEXT,
             iv          BLOB NOT NULL,
             tag         BLOB NOT NULL,
@@ -169,16 +210,50 @@ core::Error StorageEngine::init_schema() {
             updated_at  INTEGER NOT NULL
         );
     )SQL";
-    core::Error err = exec_sql(kCreateTable);
+    err = exec_sql(kCreateTable);
     if (!err.ok()) return err;
     err = exec_sql(
-        "CREATE INDEX IF NOT EXISTS idx_passwords_website ON passwords(website);");
+        "CREATE INDEX IF NOT EXISTS idx_passwords_entry_name ON passwords(entry_name);");
     if (!err.ok()) return err;
     err = exec_sql(
-        "CREATE INDEX IF NOT EXISTS idx_passwords_username ON passwords(username);");
+        "CREATE INDEX IF NOT EXISTS idx_passwords_account ON passwords(account);");
     if (!err.ok()) return err;
 
-    // 生成器历史记录表
+    // tags 表
+    const char* kCreateTagsTable = R"SQL(
+        CREATE TABLE IF NOT EXISTS tags (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL UNIQUE,
+            color       TEXT,
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
+    )SQL";
+    err = exec_sql(kCreateTagsTable);
+    if (!err.ok()) return err;
+    err = exec_sql("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);");
+    if (!err.ok()) return err;
+
+    // entry_tags 关联表
+    const char* kCreateEntryTags = R"SQL(
+        CREATE TABLE IF NOT EXISTS entry_tags (
+            entry_id    INTEGER NOT NULL,
+            tag_id      INTEGER NOT NULL,
+            PRIMARY KEY (entry_id, tag_id),
+            FOREIGN KEY (entry_id) REFERENCES passwords(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id)   REFERENCES tags(id)       ON DELETE CASCADE
+        );
+    )SQL";
+    err = exec_sql(kCreateEntryTags);
+    if (!err.ok()) return err;
+    err = exec_sql("CREATE INDEX IF NOT EXISTS idx_entry_tags_tag ON entry_tags(tag_id);");
+    if (!err.ok()) return err;
+
+    // 启用外键约束（ON DELETE CASCADE 依赖此开关）
+    err = exec_sql("PRAGMA foreign_keys = ON;");
+    if (!err.ok()) return err;
+
+    // 生成器历史记录表（保持不变）
     const char* kCreateGenTable = R"SQL(
         CREATE TABLE IF NOT EXISTS generated_passwords (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -195,13 +270,25 @@ core::Error StorageEngine::init_schema() {
         "CREATE INDEX IF NOT EXISTS idx_genpw_created_at ON generated_passwords(created_at);");
     if (!err.ok()) return err;
 
-    // 通用 KV 设置表
-    err = exec_sql(
-        "CREATE TABLE IF NOT EXISTS settings ("
-        "  key   TEXT PRIMARY KEY,"
-        "  value TEXT NOT NULL"
-        ");");
-    return err;
+    // 写入 schema_version（UPSERT）
+    {
+        const char* kUpsert = R"SQL(
+            INSERT INTO settings (key, value) VALUES ('schema_version', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+        )SQL";
+        sqlite3_stmt* stmt = nullptr;
+        int rc = sqlite3_prepare_v2(db_.get(), kUpsert, -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            return make_storage_error("init_schema: upsert schema_version prepare", db_.get());
+        }
+        StmtHandle sp(stmt);
+        sqlite3_bind_text(sp.get(), 1, kTargetVersion, -1, SQLITE_TRANSIENT);
+        rc = sqlite3_step(sp.get());
+        if (rc != SQLITE_DONE) {
+            return rc_to_error(rc, "init_schema: upsert schema_version step", db_.get());
+        }
+    }
+    return core::Error{};
 }
 
 core::ByteVec StorageEngine::read_blob_column(sqlite3_stmt* stmt, int col) {
@@ -215,28 +302,52 @@ core::ByteVec StorageEngine::read_blob_column(sqlite3_stmt* stmt, int col) {
 }
 
 core::PasswordEntry StorageEngine::read_row(sqlite3_stmt* stmt) {
+    // 列顺序（与各 SELECT 保持一致）：
+    //   0 id, 1 entry_name, 2 account, 3 username, 4 password,
+    //   5 website, 6 note, 7 iv, 8 tag, 9 created_at, 10 updated_at
     core::PasswordEntry e;
     e.id = sqlite3_column_int64(stmt, 0);
 
     if (const unsigned char* v = sqlite3_column_text(stmt, 1)) {
-        e.website.assign(reinterpret_cast<const char*>(v));
+        e.entry_name.assign(reinterpret_cast<const char*>(v));
     }
     if (const unsigned char* v = sqlite3_column_text(stmt, 2)) {
+        e.account.assign(reinterpret_cast<const char*>(v));
+    }
+    if (const unsigned char* v = sqlite3_column_text(stmt, 3)) {
         e.username.assign(reinterpret_cast<const char*>(v));
     }
     // password 字段为已加密的二进制；存为 std::string 的字节序列。
-    if (const void* v = sqlite3_column_blob(stmt, 3)) {
-        int n = sqlite3_column_bytes(stmt, 3);
+    if (const void* v = sqlite3_column_blob(stmt, 4)) {
+        int n = sqlite3_column_bytes(stmt, 4);
         e.password.assign(static_cast<const char*>(v), static_cast<size_t>(n));
     }
-    if (const unsigned char* v = sqlite3_column_text(stmt, 4)) {
+    if (const unsigned char* v = sqlite3_column_text(stmt, 5)) {
+        e.website.assign(reinterpret_cast<const char*>(v));
+    }
+    if (const unsigned char* v = sqlite3_column_text(stmt, 6)) {
         e.note.assign(reinterpret_cast<const char*>(v));
     }
-    e.iv = read_blob_column(stmt, 5);
-    e.tag = read_blob_column(stmt, 6);
-    e.created_at = sqlite3_column_int64(stmt, 7);
-    e.updated_at = sqlite3_column_int64(stmt, 8);
+    e.iv = read_blob_column(stmt, 7);
+    e.tag = read_blob_column(stmt, 8);
+    e.created_at = sqlite3_column_int64(stmt, 9);
+    e.updated_at = sqlite3_column_int64(stmt, 10);
     return e;
+}
+
+core::Tag StorageEngine::read_tag_row(sqlite3_stmt* stmt) {
+    // 列顺序：0 id, 1 name, 2 color, 3 created_at, 4 updated_at
+    core::Tag t;
+    t.id = sqlite3_column_int64(stmt, 0);
+    if (const unsigned char* v = sqlite3_column_text(stmt, 1)) {
+        t.name.assign(reinterpret_cast<const char*>(v));
+    }
+    if (const unsigned char* v = sqlite3_column_text(stmt, 2)) {
+        t.color.assign(reinterpret_cast<const char*>(v));
+    }
+    t.created_at = sqlite3_column_int64(stmt, 3);
+    t.updated_at = sqlite3_column_int64(stmt, 4);
+    return t;
 }
 
 int64_t StorageEngine::now_seconds() {
@@ -258,8 +369,9 @@ core::Result<core::PasswordEntry> StorageEngine::add_entry(
 
     const char* kSql = R"SQL(
         INSERT INTO passwords
-            (website, username, password, note, iv, tag, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            (entry_name, account, username, password, website, note,
+             iv, tag, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     )SQL";
 
     sqlite3_stmt* raw_stmt = nullptr;
@@ -270,24 +382,36 @@ core::Result<core::PasswordEntry> StorageEngine::add_entry(
     }
     StmtHandle stmt(raw_stmt);
 
-    sqlite3_bind_text(stmt.get(), 1, entry.website.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt.get(), 2, entry.username.c_str(), -1, SQLITE_TRANSIENT);
-    bind_blob_safe(stmt.get(), 3, entry.password.data(),
+    sqlite3_bind_text(stmt.get(), 1, entry.entry_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 2, entry.account.c_str(), -1, SQLITE_TRANSIENT);
+    // username 可空
+    if (entry.username.empty()) {
+        sqlite3_bind_null(stmt.get(), 3);
+    } else {
+        sqlite3_bind_text(stmt.get(), 3, entry.username.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    bind_blob_safe(stmt.get(), 4, entry.password.data(),
                    static_cast<int>(entry.password.size()));
+    // website 可空
+    if (entry.website.empty()) {
+        sqlite3_bind_null(stmt.get(), 5);
+    } else {
+        sqlite3_bind_text(stmt.get(), 5, entry.website.c_str(), -1, SQLITE_TRANSIENT);
+    }
     // note 可空
     if (entry.note.empty()) {
-        sqlite3_bind_null(stmt.get(), 4);
+        sqlite3_bind_null(stmt.get(), 6);
     } else {
-        sqlite3_bind_text(stmt.get(), 4, entry.note.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt.get(), 6, entry.note.c_str(), -1, SQLITE_TRANSIENT);
     }
-    bind_blob_safe(stmt.get(), 5, entry.iv.data(),
+    bind_blob_safe(stmt.get(), 7, entry.iv.data(),
                    static_cast<int>(entry.iv.size()));
-    bind_blob_safe(stmt.get(), 6, entry.tag.data(),
+    bind_blob_safe(stmt.get(), 8, entry.tag.data(),
                    static_cast<int>(entry.tag.size()));
 
     const int64_t ts = now_seconds();
-    sqlite3_bind_int64(stmt.get(), 7, ts);
-    sqlite3_bind_int64(stmt.get(), 8, ts);
+    sqlite3_bind_int64(stmt.get(), 9, ts);
+    sqlite3_bind_int64(stmt.get(), 10, ts);
 
     rc = sqlite3_step(stmt.get());
     if (rc != SQLITE_DONE) {
@@ -299,6 +423,19 @@ core::Result<core::PasswordEntry> StorageEngine::add_entry(
     out.id = sqlite3_last_insert_rowid(db_.get());
     out.created_at = ts;
     out.updated_at = ts;
+
+    // 同步标签关联：根据 entry.tags 中的 id 写入 entry_tags。
+    // 对 id==0 的新标签，调用方（service）应先调用 add_tag 落库并替换为真实 id。
+    std::vector<int64_t> tag_ids;
+    tag_ids.reserve(entry.tags.size());
+    for (const auto& t : entry.tags) {
+        if (t.id != 0) tag_ids.push_back(t.id);
+    }
+    auto tag_err = set_entry_tags_unlocked(out.id, tag_ids);
+    if (!tag_err.ok()) {
+        return core::Result<core::PasswordEntry>::Err(tag_err);
+    }
+    out.tags = read_entry_tags_unlocked(out.id);
     return core::Result<core::PasswordEntry>::Ok(std::move(out));
 }
 
@@ -317,13 +454,15 @@ core::Result<core::PasswordEntry> StorageEngine::update_entry(
 
     const char* kSql = R"SQL(
         UPDATE passwords SET
-            website    = ?,
-            username   = ?,
-            password   = ?,
-            note       = ?,
-            iv         = ?,
-            tag        = ?,
-            updated_at = ?
+            entry_name  = ?,
+            account     = ?,
+            username    = ?,
+            password    = ?,
+            website     = ?,
+            note        = ?,
+            iv          = ?,
+            tag         = ?,
+            updated_at  = ?
         WHERE id = ?;
     )SQL";
 
@@ -335,22 +474,32 @@ core::Result<core::PasswordEntry> StorageEngine::update_entry(
     }
     StmtHandle stmt(raw_stmt);
 
-    sqlite3_bind_text(stmt.get(), 1, entry.website.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt.get(), 2, entry.username.c_str(), -1, SQLITE_TRANSIENT);
-    bind_blob_safe(stmt.get(), 3, entry.password.data(),
-                   static_cast<int>(entry.password.size()));
-    if (entry.note.empty()) {
-        sqlite3_bind_null(stmt.get(), 4);
+    sqlite3_bind_text(stmt.get(), 1, entry.entry_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 2, entry.account.c_str(), -1, SQLITE_TRANSIENT);
+    if (entry.username.empty()) {
+        sqlite3_bind_null(stmt.get(), 3);
     } else {
-        sqlite3_bind_text(stmt.get(), 4, entry.note.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt.get(), 3, entry.username.c_str(), -1, SQLITE_TRANSIENT);
     }
-    bind_blob_safe(stmt.get(), 5, entry.iv.data(),
+    bind_blob_safe(stmt.get(), 4, entry.password.data(),
+                   static_cast<int>(entry.password.size()));
+    if (entry.website.empty()) {
+        sqlite3_bind_null(stmt.get(), 5);
+    } else {
+        sqlite3_bind_text(stmt.get(), 5, entry.website.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (entry.note.empty()) {
+        sqlite3_bind_null(stmt.get(), 6);
+    } else {
+        sqlite3_bind_text(stmt.get(), 6, entry.note.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    bind_blob_safe(stmt.get(), 7, entry.iv.data(),
                    static_cast<int>(entry.iv.size()));
-    bind_blob_safe(stmt.get(), 6, entry.tag.data(),
+    bind_blob_safe(stmt.get(), 8, entry.tag.data(),
                    static_cast<int>(entry.tag.size()));
     const int64_t ts = now_seconds();
-    sqlite3_bind_int64(stmt.get(), 7, ts);
-    sqlite3_bind_int64(stmt.get(), 8, entry.id);
+    sqlite3_bind_int64(stmt.get(), 9, ts);
+    sqlite3_bind_int64(stmt.get(), 10, entry.id);
 
     rc = sqlite3_step(stmt.get());
     if (rc != SQLITE_DONE) {
@@ -364,8 +513,20 @@ core::Result<core::PasswordEntry> StorageEngine::update_entry(
                         "update_entry: id not found"));
     }
 
+    // 同步标签关联（全量替换）
+    std::vector<int64_t> tag_ids;
+    tag_ids.reserve(entry.tags.size());
+    for (const auto& t : entry.tags) {
+        if (t.id != 0) tag_ids.push_back(t.id);
+    }
+    auto tag_err = set_entry_tags_unlocked(entry.id, tag_ids);
+    if (!tag_err.ok()) {
+        return core::Result<core::PasswordEntry>::Err(tag_err);
+    }
+
     core::PasswordEntry out = entry;
     out.updated_at = ts;
+    out.tags = read_entry_tags_unlocked(entry.id);
     // created_at 不被 UPDATE 修改，DB 中保留原值；
     // 这里沿用调用方传入的值，调用方通常已通过 get_entry 拿到完整条目。
     return core::Result<core::PasswordEntry>::Ok(std::move(out));
@@ -405,7 +566,8 @@ core::Result<core::PasswordEntry> StorageEngine::get_entry(int64_t id) {
     }
 
     const char* kSql = R"SQL(
-        SELECT id, website, username, password, note, iv, tag, created_at, updated_at
+        SELECT id, entry_name, account, username, password, website, note,
+               iv, tag, created_at, updated_at
         FROM passwords WHERE id = ?;
     )SQL";
     sqlite3_stmt* raw_stmt = nullptr;
@@ -419,7 +581,9 @@ core::Result<core::PasswordEntry> StorageEngine::get_entry(int64_t id) {
     sqlite3_bind_int64(stmt.get(), 1, id);
     rc = sqlite3_step(stmt.get());
     if (rc == SQLITE_ROW) {
-        return core::Result<core::PasswordEntry>::Ok(read_row(stmt.get()));
+        core::PasswordEntry e = read_row(stmt.get());
+        fill_entry_tags_unlocked(e);
+        return core::Result<core::PasswordEntry>::Ok(std::move(e));
     }
     if (rc == SQLITE_DONE) {
         return core::Result<core::PasswordEntry>::Err(
@@ -440,12 +604,13 @@ core::Result<std::vector<core::PasswordEntry>> StorageEngine::search_entries(
     // 字段白名单：password 是 BLOB，不参与搜索（密文搜索无意义）。
     // 字段名经白名单校验后直接拼入 SQL，杜绝注入。
     auto is_searchable_field = [](const std::string& f) {
-        return f == "website" || f == "username" || f == "note";
+        return f == "entry_name" || f == "account" || f == "username" ||
+               f == "website" || f == "note";
     };
 
     std::vector<std::string> fields;
     if (query.fields.empty()) {
-        fields = {"website", "username", "note"};
+        fields = {"entry_name", "account", "username", "website", "note"};
     } else {
         for (const auto& f : query.fields) {
             if (is_searchable_field(f)) {
@@ -454,11 +619,21 @@ core::Result<std::vector<core::PasswordEntry>> StorageEngine::search_entries(
         }
     }
 
+    // 文本与标签两个过滤维度以 AND 组合：
+    //   - 文本：fields 中任一字段子串匹配（OR）
+    //   - 标签：entry_id 在 entry_tags 中匹配 tag_ids 任一（OR）
+    // 二者同时存在时取交集（AND）。
     std::ostringstream sql;
-    sql << "SELECT id, website, username, password, note, iv, tag, "
-           "created_at, updated_at FROM passwords";
-    if (!fields.empty()) {
-        sql << " WHERE ";
+    sql << "SELECT id, entry_name, account, username, password, website, note, "
+           "iv, tag, created_at, updated_at FROM passwords";
+    bool has_text_clause = !fields.empty() && !query.text.empty();
+    bool has_tag_clause = !query.tag_ids.empty();
+    bool needs_where = has_text_clause || has_tag_clause;
+    if (needs_where) sql << " WHERE ";
+
+    bool need_and = false;
+    if (has_text_clause) {
+        sql << "(";
         for (size_t i = 0; i < fields.size(); ++i) {
             if (i > 0) sql << " OR ";
             if (query.case_sensitive) {
@@ -467,6 +642,17 @@ core::Result<std::vector<core::PasswordEntry>> StorageEngine::search_entries(
                 sql << fields[i] << " LIKE ? ESCAPE '\\'";
             }
         }
+        sql << ")";
+        need_and = true;
+    }
+    if (has_tag_clause) {
+        if (need_and) sql << " AND ";
+        sql << "id IN (SELECT entry_id FROM entry_tags WHERE tag_id IN (";
+        for (size_t i = 0; i < query.tag_ids.size(); ++i) {
+            if (i > 0) sql << ",";
+            sql << "?";
+        }
+        sql << "))";
     }
     sql << " ORDER BY created_at DESC;";
 
@@ -479,20 +665,31 @@ core::Result<std::vector<core::PasswordEntry>> StorageEngine::search_entries(
     }
     StmtHandle stmt(raw_stmt);
 
-    // 绑定每个字段的匹配模式。
-    for (size_t i = 0; i < fields.size(); ++i) {
-        std::string pattern = query.case_sensitive
-                                  ? escape_glob_pattern(query.text)
-                                  : escape_like_pattern(query.text);
-        sqlite3_bind_text(stmt.get(), static_cast<int>(i + 1),
-                          pattern.c_str(), -1, SQLITE_TRANSIENT);
+    int bind_idx = 1;
+    // 绑定文本匹配模式
+    if (has_text_clause) {
+        for (size_t i = 0; i < fields.size(); ++i) {
+            std::string pattern = query.case_sensitive
+                                      ? escape_glob_pattern(query.text)
+                                      : escape_like_pattern(query.text);
+            sqlite3_bind_text(stmt.get(), bind_idx++,
+                              pattern.c_str(), -1, SQLITE_TRANSIENT);
+        }
+    }
+    // 绑定 tag_ids
+    if (has_tag_clause) {
+        for (auto tid : query.tag_ids) {
+            sqlite3_bind_int64(stmt.get(), bind_idx++, tid);
+        }
     }
 
     std::vector<core::PasswordEntry> results;
     while (true) {
         rc = sqlite3_step(stmt.get());
         if (rc == SQLITE_ROW) {
-            results.push_back(read_row(stmt.get()));
+            core::PasswordEntry e = read_row(stmt.get());
+            fill_entry_tags_unlocked(e);
+            results.push_back(std::move(e));
         } else if (rc == SQLITE_DONE) {
             break;
         } else {
@@ -511,7 +708,8 @@ core::Result<std::vector<core::PasswordEntry>> StorageEngine::list_entries() {
     }
 
     const char* kSql = R"SQL(
-        SELECT id, website, username, password, note, iv, tag, created_at, updated_at
+        SELECT id, entry_name, account, username, password, website, note,
+               iv, tag, created_at, updated_at
         FROM passwords ORDER BY created_at DESC;
     )SQL";
     sqlite3_stmt* raw_stmt = nullptr;
@@ -526,7 +724,9 @@ core::Result<std::vector<core::PasswordEntry>> StorageEngine::list_entries() {
     while (true) {
         rc = sqlite3_step(stmt.get());
         if (rc == SQLITE_ROW) {
-            results.push_back(read_row(stmt.get()));
+            core::PasswordEntry e = read_row(stmt.get());
+            fill_entry_tags_unlocked(e);
+            results.push_back(std::move(e));
         } else if (rc == SQLITE_DONE) {
             break;
         } else {
@@ -814,6 +1014,346 @@ core::Error StorageEngine::set_setting(const std::string& key,
         return rc_to_error(rc, "set_setting: upsert step", db_.get());
     }
     return core::Error{};
+}
+
+// =============================================================================
+// 标签（Tag）与 entry-tag 关联
+// =============================================================================
+// 调用方需持锁的辅助函数实现
+// =============================================================================
+
+std::vector<core::Tag> StorageEngine::read_entry_tags_unlocked(int64_t entry_id) {
+    std::vector<core::Tag> tags;
+    if (db_ == nullptr) return tags;
+
+    const char* kSql = R"SQL(
+        SELECT t.id, t.name, t.color, t.created_at, t.updated_at
+        FROM tags t
+        INNER JOIN entry_tags et ON et.tag_id = t.id
+        WHERE et.entry_id = ?
+        ORDER BY t.name ASC;
+    )SQL";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) return tags;
+    StmtHandle stmt(raw_stmt);
+    sqlite3_bind_int64(stmt.get(), 1, entry_id);
+
+    while (true) {
+        rc = sqlite3_step(stmt.get());
+        if (rc == SQLITE_ROW) {
+            tags.push_back(read_tag_row(stmt.get()));
+        } else if (rc == SQLITE_DONE) {
+            break;
+        } else {
+            break;  // 出错时返回已收集到的标签
+        }
+    }
+    return tags;
+}
+
+core::Error StorageEngine::set_entry_tags_unlocked(int64_t entry_id,
+                                                     const std::vector<int64_t>& tag_ids) {
+    if (db_ == nullptr) {
+        return core::Error(core::ErrorCode::StorageError, "database not opened");
+    }
+    // 1. 删除现有所有关联
+    {
+        const char* kDel = "DELETE FROM entry_tags WHERE entry_id = ?;";
+        sqlite3_stmt* raw_stmt = nullptr;
+        int rc = sqlite3_prepare_v2(db_.get(), kDel, -1, &raw_stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            return make_storage_error("set_entry_tags: delete prepare", db_.get());
+        }
+        StmtHandle stmt(raw_stmt);
+        sqlite3_bind_int64(stmt.get(), 1, entry_id);
+        rc = sqlite3_step(stmt.get());
+        if (rc != SQLITE_DONE) {
+            return rc_to_error(rc, "set_entry_tags: delete step", db_.get());
+        }
+    }
+    // 2. 去重写入新关联（跳过 id==0 与不存在的 tag_id）
+    if (tag_ids.empty()) return core::Error{};
+
+    const char* kIns = "INSERT OR IGNORE INTO entry_tags (entry_id, tag_id) VALUES (?, ?);";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kIns, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return make_storage_error("set_entry_tags: insert prepare", db_.get());
+    }
+    StmtHandle stmt(raw_stmt);
+
+    // 去重（保留首次出现顺序）
+    std::vector<int64_t> unique_ids;
+    unique_ids.reserve(tag_ids.size());
+    for (auto tid : tag_ids) {
+        if (tid == 0) continue;
+        if (std::find(unique_ids.begin(), unique_ids.end(), tid) == unique_ids.end()) {
+            unique_ids.push_back(tid);
+        }
+    }
+
+    for (auto tid : unique_ids) {
+        sqlite3_bind_int64(stmt.get(), 1, entry_id);
+        sqlite3_bind_int64(stmt.get(), 2, tid);
+        rc = sqlite3_step(stmt.get());
+        if (rc != SQLITE_DONE) {
+            // 关联表外键约束失败（tag_id 不存在）会被 SQLITE_CONSTRAINT 捕获，
+            // 这里以静默跳过策略处理；其他错误返回。
+            if (rc == SQLITE_CONSTRAINT) {
+                sqlite3_reset(stmt.get());
+                continue;
+            }
+            return rc_to_error(rc, "set_entry_tags: insert step", db_.get());
+        }
+        sqlite3_reset(stmt.get());
+    }
+    return core::Error{};
+}
+
+void StorageEngine::fill_entry_tags_unlocked(core::PasswordEntry& entry) {
+    entry.tags = read_entry_tags_unlocked(entry.id);
+}
+
+// -----------------------------------------------------------------------------
+// 公开 Tag CRUD
+// -----------------------------------------------------------------------------
+
+core::Result<core::Tag> StorageEngine::add_tag(const core::Tag& tag) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::StorageError, "database not opened"));
+    }
+    if (tag.name.empty()) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::InvalidArgument, "add_tag: name must not be empty"));
+    }
+
+    const char* kSql = R"SQL(
+        INSERT INTO tags (name, color, created_at, updated_at)
+        VALUES (?, ?, ?, ?);
+    )SQL";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return core::Result<core::Tag>::Err(
+            make_storage_error("add_tag: prepare", db_.get()));
+    }
+    StmtHandle stmt(raw_stmt);
+    sqlite3_bind_text(stmt.get(), 1, tag.name.c_str(), -1, SQLITE_TRANSIENT);
+    if (tag.color.empty()) {
+        sqlite3_bind_null(stmt.get(), 2);
+    } else {
+        sqlite3_bind_text(stmt.get(), 2, tag.color.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    const int64_t ts = now_seconds();
+    sqlite3_bind_int64(stmt.get(), 3, ts);
+    sqlite3_bind_int64(stmt.get(), 4, ts);
+
+    rc = sqlite3_step(stmt.get());
+    if (rc != SQLITE_DONE) {
+        if (rc == SQLITE_CONSTRAINT) {
+            return core::Result<core::Tag>::Err(
+                core::Error(core::ErrorCode::AlreadyExists,
+                            "add_tag: tag name already exists"));
+        }
+        return core::Result<core::Tag>::Err(
+            rc_to_error(rc, "add_tag: step", db_.get()));
+    }
+
+    core::Tag out = tag;
+    out.id = sqlite3_last_insert_rowid(db_.get());
+    out.created_at = ts;
+    out.updated_at = ts;
+    return core::Result<core::Tag>::Ok(std::move(out));
+}
+
+core::Result<core::Tag> StorageEngine::update_tag(const core::Tag& tag) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::StorageError, "database not opened"));
+    }
+    if (tag.id == 0) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::InvalidArgument, "update_tag: id must not be 0"));
+    }
+    if (tag.name.empty()) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::InvalidArgument, "update_tag: name must not be empty"));
+    }
+
+    const char* kSql = R"SQL(
+        UPDATE tags SET name = ?, color = ?, updated_at = ? WHERE id = ?;
+    )SQL";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return core::Result<core::Tag>::Err(
+            make_storage_error("update_tag: prepare", db_.get()));
+    }
+    StmtHandle stmt(raw_stmt);
+    sqlite3_bind_text(stmt.get(), 1, tag.name.c_str(), -1, SQLITE_TRANSIENT);
+    if (tag.color.empty()) {
+        sqlite3_bind_null(stmt.get(), 2);
+    } else {
+        sqlite3_bind_text(stmt.get(), 2, tag.color.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    const int64_t ts = now_seconds();
+    sqlite3_bind_int64(stmt.get(), 3, ts);
+    sqlite3_bind_int64(stmt.get(), 4, tag.id);
+
+    rc = sqlite3_step(stmt.get());
+    if (rc != SQLITE_DONE) {
+        if (rc == SQLITE_CONSTRAINT) {
+            return core::Result<core::Tag>::Err(
+                core::Error(core::ErrorCode::AlreadyExists,
+                            "update_tag: tag name already exists"));
+        }
+        return core::Result<core::Tag>::Err(
+            rc_to_error(rc, "update_tag: step", db_.get()));
+    }
+    if (sqlite3_changes(db_.get()) == 0) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::NotFound, "update_tag: id not found"));
+    }
+
+    core::Tag out = tag;
+    out.updated_at = ts;
+    return core::Result<core::Tag>::Ok(std::move(out));
+}
+
+core::Error StorageEngine::remove_tag(int64_t id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Error(core::ErrorCode::StorageError, "database not opened");
+    }
+    // entry_tags 关联由 ON DELETE CASCADE 自动清理
+    const char* kSql = "DELETE FROM tags WHERE id = ?;";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return make_storage_error("remove_tag: prepare", db_.get());
+    }
+    StmtHandle stmt(raw_stmt);
+    sqlite3_bind_int64(stmt.get(), 1, id);
+    rc = sqlite3_step(stmt.get());
+    if (rc != SQLITE_DONE) {
+        return rc_to_error(rc, "remove_tag: step", db_.get());
+    }
+    if (sqlite3_changes(db_.get()) == 0) {
+        return core::Error(core::ErrorCode::NotFound, "remove_tag: id not found");
+    }
+    return core::Error{};
+}
+
+core::Result<std::vector<core::Tag>> StorageEngine::list_tags() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Result<std::vector<core::Tag>>::Err(
+            core::Error(core::ErrorCode::StorageError, "database not opened"));
+    }
+    const char* kSql = R"SQL(
+        SELECT id, name, color, created_at, updated_at
+        FROM tags ORDER BY name ASC;
+    )SQL";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return core::Result<std::vector<core::Tag>>::Err(
+            make_storage_error("list_tags: prepare", db_.get()));
+    }
+    StmtHandle stmt(raw_stmt);
+
+    std::vector<core::Tag> results;
+    while (true) {
+        rc = sqlite3_step(stmt.get());
+        if (rc == SQLITE_ROW) {
+            results.push_back(read_tag_row(stmt.get()));
+        } else if (rc == SQLITE_DONE) {
+            break;
+        } else {
+            return core::Result<std::vector<core::Tag>>::Err(
+                rc_to_error(rc, "list_tags: step", db_.get()));
+        }
+    }
+    return core::Result<std::vector<core::Tag>>::Ok(std::move(results));
+}
+
+core::Result<core::Tag> StorageEngine::get_tag(int64_t id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::StorageError, "database not opened"));
+    }
+    const char* kSql = R"SQL(
+        SELECT id, name, color, created_at, updated_at
+        FROM tags WHERE id = ?;
+    )SQL";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return core::Result<core::Tag>::Err(
+            make_storage_error("get_tag: prepare", db_.get()));
+    }
+    StmtHandle stmt(raw_stmt);
+    sqlite3_bind_int64(stmt.get(), 1, id);
+    rc = sqlite3_step(stmt.get());
+    if (rc == SQLITE_ROW) {
+        return core::Result<core::Tag>::Ok(read_tag_row(stmt.get()));
+    }
+    if (rc == SQLITE_DONE) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::NotFound, "get_tag: id not found"));
+    }
+    return core::Result<core::Tag>::Err(
+        rc_to_error(rc, "get_tag: step", db_.get()));
+}
+
+core::Result<core::Tag> StorageEngine::find_tag_by_name(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::StorageError, "database not opened"));
+    }
+    const char* kSql = R"SQL(
+        SELECT id, name, color, created_at, updated_at
+        FROM tags WHERE name = ?;
+    )SQL";
+    sqlite3_stmt* raw_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_.get(), kSql, -1, &raw_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return core::Result<core::Tag>::Err(
+            make_storage_error("find_tag_by_name: prepare", db_.get()));
+    }
+    StmtHandle stmt(raw_stmt);
+    sqlite3_bind_text(stmt.get(), 1, name.c_str(), -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt.get());
+    if (rc == SQLITE_ROW) {
+        return core::Result<core::Tag>::Ok(read_tag_row(stmt.get()));
+    }
+    if (rc == SQLITE_DONE) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::NotFound, "find_tag_by_name: not found"));
+    }
+    return core::Result<core::Tag>::Err(
+        rc_to_error(rc, "find_tag_by_name: step", db_.get()));
+}
+
+core::Result<std::vector<core::Tag>> StorageEngine::get_entry_tags(int64_t entry_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        return core::Result<std::vector<core::Tag>>::Err(
+            core::Error(core::ErrorCode::StorageError, "database not opened"));
+    }
+    return core::Result<std::vector<core::Tag>>::Ok(read_entry_tags_unlocked(entry_id));
+}
+
+core::Error StorageEngine::set_entry_tags(int64_t entry_id,
+                                            const std::vector<int64_t>& tag_ids) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return set_entry_tags_unlocked(entry_id, tag_ids);
 }
 
 }  // namespace pwdvault::storage

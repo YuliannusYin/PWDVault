@@ -94,6 +94,9 @@ template <> core::Result<core::ErrorCode> deserialize<core::ErrorCode>(core::Byt
 template <> core::ByteVec serialize<core::PasswordEntry>(const core::PasswordEntry&);
 template <> core::Result<core::PasswordEntry> deserialize<core::PasswordEntry>(core::ByteSpan);
 
+template <> core::ByteVec serialize<core::Tag>(const core::Tag&);
+template <> core::Result<core::Tag> deserialize<core::Tag>(core::ByteSpan);
+
 template <> core::ByteVec serialize<core::SearchQuery>(const core::SearchQuery&);
 template <> core::Result<core::SearchQuery> deserialize<core::SearchQuery>(core::ByteSpan);
 
@@ -170,6 +173,31 @@ template <> core::Result<GetGeneratorSettingsRequest> deserialize<GetGeneratorSe
 template <> core::ByteVec serialize<SetGeneratorLimitRequest>(const SetGeneratorLimitRequest&);
 template <> core::Result<SetGeneratorLimitRequest> deserialize<SetGeneratorLimitRequest>(core::ByteSpan);
 
+// Tag 相关请求
+template <> core::ByteVec serialize<AddTagRequest>(const AddTagRequest&);
+template <> core::Result<AddTagRequest> deserialize<AddTagRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<UpdateTagRequest>(const UpdateTagRequest&);
+template <> core::Result<UpdateTagRequest> deserialize<UpdateTagRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<RemoveTagRequest>(const RemoveTagRequest&);
+template <> core::Result<RemoveTagRequest> deserialize<RemoveTagRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<ListTagsRequest>(const ListTagsRequest&);
+template <> core::Result<ListTagsRequest> deserialize<ListTagsRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<GetTagRequest>(const GetTagRequest&);
+template <> core::Result<GetTagRequest> deserialize<GetTagRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<FindTagByNameRequest>(const FindTagByNameRequest&);
+template <> core::Result<FindTagByNameRequest> deserialize<FindTagByNameRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<GetEntryTagsRequest>(const GetEntryTagsRequest&);
+template <> core::Result<GetEntryTagsRequest> deserialize<GetEntryTagsRequest>(core::ByteSpan);
+
+template <> core::ByteVec serialize<SetEntryTagsRequest>(const SetEntryTagsRequest&);
+template <> core::Result<SetEntryTagsRequest> deserialize<SetEntryTagsRequest>(core::ByteSpan);
+
 template <> core::ByteVec serialize<core::GeneratedPasswordRecord>(const core::GeneratedPasswordRecord&);
 template <> core::Result<core::GeneratedPasswordRecord> deserialize<core::GeneratedPasswordRecord>(core::ByteSpan);
 
@@ -239,6 +267,31 @@ template <> core::Result<GetGeneratorSettingsResponse> deserialize<GetGeneratorS
 
 template <> core::ByteVec serialize<SetGeneratorLimitResponse>(const SetGeneratorLimitResponse&);
 template <> core::Result<SetGeneratorLimitResponse> deserialize<SetGeneratorLimitResponse>(core::ByteSpan);
+
+// Tag 相关响应
+template <> core::ByteVec serialize<AddTagResponse>(const AddTagResponse&);
+template <> core::Result<AddTagResponse> deserialize<AddTagResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<UpdateTagResponse>(const UpdateTagResponse&);
+template <> core::Result<UpdateTagResponse> deserialize<UpdateTagResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<RemoveTagResponse>(const RemoveTagResponse&);
+template <> core::Result<RemoveTagResponse> deserialize<RemoveTagResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<ListTagsResponse>(const ListTagsResponse&);
+template <> core::Result<ListTagsResponse> deserialize<ListTagsResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<GetTagResponse>(const GetTagResponse&);
+template <> core::Result<GetTagResponse> deserialize<GetTagResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<FindTagByNameResponse>(const FindTagByNameResponse&);
+template <> core::Result<FindTagByNameResponse> deserialize<FindTagByNameResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<GetEntryTagsResponse>(const GetEntryTagsResponse&);
+template <> core::Result<GetEntryTagsResponse> deserialize<GetEntryTagsResponse>(core::ByteSpan);
+
+template <> core::ByteVec serialize<SetEntryTagsResponse>(const SetEntryTagsResponse&);
+template <> core::Result<SetEntryTagsResponse> deserialize<SetEntryTagsResponse>(core::ByteSpan);
 
 template <> core::ByteVec serialize<ErrorResponse>(const ErrorResponse&);
 template <> core::Result<ErrorResponse> deserialize<ErrorResponse>(core::ByteSpan);

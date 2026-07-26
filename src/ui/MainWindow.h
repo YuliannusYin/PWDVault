@@ -8,8 +8,7 @@
 //   - 左侧 232px 侧边栏：品牌 logo + 4 个导航项（密码本/录入/生成器/设置）
 //     + 底部服务连接状态 + 锁定按钮
 //   - 右侧内容区：
-//       * 顶部 56px 顶栏：页面标题 + 条目数 badge + 主题切换 + 锁定按钮
-//                          + 「新增」按钮（仅密码本视图显示）
+//   - 顶部 56px 顶栏：页面标题 + 条目数 badge + 主题切换 + 锁定按钮
 //                          + 最小化 / 关闭 按钮（自定义窗口控制）
 //       * 下方 QStackedWidget：4 个功能视图
 //
@@ -19,6 +18,9 @@
 //     保留 Windows Aero Snap（拖到屏幕边缘自动排列）与任务栏右键菜单
 //   - 拖动窗口边缘不调整大小（固定尺寸，但允许 Aero Snap 最大化/还原）
 //   - 双击顶部标题栏区域不切换最大化
+//   - 任务栏按钮：补回 WS_MINIMIZEBOX 样式，支持「点击切换最小化/还原」
+//   - 系统托盘：关闭按钮 → 最小化到托盘；托盘单击切换显隐；
+//     托盘右键菜单提供 显示/隐藏、锁定、退出
 //
 // 启动流程：
 //   - 查询 vault 状态：程序密码已启用且已锁定 → 显示 UnlockView（模态遮罩）
@@ -29,10 +31,12 @@
 
 #include <QMainWindow>
 #include <QString>
+#include <QSystemTrayIcon>
 
 class QButtonGroup;
 class QFrame;
 class QLabel;
+class QMenu;
 class QPushButton;
 class QStackedWidget;
 
@@ -61,7 +65,6 @@ private slots:
     void on_nav_clicked(int row);
     void on_theme_toggle();
     void on_lock_clicked();
-    void on_add_entry_clicked();
     void on_ipc_disconnected();
     void on_ipc_error(const QString& message);
 
@@ -83,12 +86,24 @@ private slots:
     void on_minimize_clicked();
     void on_close_clicked();
 
+    // 系统托盘
+    void on_tray_activated(QSystemTrayIcon::ActivationReason reason);
+    void on_tray_toggle_visible();
+    void on_tray_lock();
+    void on_tray_quit();
+
 private:
     void build_sidebar(QWidget* parent);
     void build_topbar(QWidget* parent);
     void update_topbar_for_view(int row);
     void update_connection_status();
     void attempt_reconnect();
+
+    /// 构建系统托盘图标与右键菜单。
+    void build_tray_icon();
+
+    /// 显示并激活主窗口（从托盘还原 / 从最小化还原统一入口）。
+    void show_and_activate();
 
     /// 查询 vault 状态判断是否需要显示解锁视图。
     bool should_show_unlock() const;
@@ -124,7 +139,6 @@ private:
     QLabel* topbar_count_badge_ = nullptr;
     QPushButton* theme_toggle_btn_ = nullptr;
     QPushButton* topbar_lock_btn_ = nullptr;
-    QPushButton* topbar_add_btn_ = nullptr;
     QPushButton* minimize_btn_ = nullptr;     ///< 自定义最小化按钮
     QPushButton* close_btn_ = nullptr;        ///< 自定义关闭按钮（hover 红色背景）
 
@@ -139,6 +153,10 @@ private:
 
     // 解锁视图（模态层，按需创建/销毁）
     UnlockView* unlock_view_ = nullptr;
+
+    // 系统托盘
+    QSystemTrayIcon* tray_icon_ = nullptr;
+    QMenu* tray_menu_ = nullptr;
 
     // 标记生成器是否由 InputView 请求打开
     bool generator_from_input_ = false;

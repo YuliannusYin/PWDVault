@@ -108,12 +108,58 @@ core::Error make_error(const char* what) {
     return core::Error(core::ErrorCode::InvalidArgument, what);
 }
 
+/// 写入 Tag：id(i64) + name(string) + color(string) + created_at(i64) + updated_at(i64)。
+void write_tag(Writer& w, const core::Tag& t) {
+    w.write_i64(t.id);
+    w.write_string(t.name);
+    w.write_string(t.color);
+    w.write_i64(t.created_at);
+    w.write_i64(t.updated_at);
+}
+
+bool read_tag(Reader& r, core::Tag& out) {
+    if (!r.read_i64(out.id)) return false;
+    if (!r.read_string(out.name)) return false;
+    if (!r.read_string(out.color)) return false;
+    if (!r.read_i64(out.created_at)) return false;
+    if (!r.read_i64(out.updated_at)) return false;
+    return true;
+}
+
+void write_tag_vector(Writer& w, const std::vector<core::Tag>& v) {
+    w.write_u32(static_cast<uint32_t>(v.size()));
+    for (const auto& t : v) {
+        write_tag(w, t);
+    }
+}
+
+bool read_tag_vector(Reader& r, std::vector<core::Tag>& out) {
+    uint32_t count = 0;
+    if (!r.read_u32(count)) return false;
+    if (count > r.remaining()) return false;  // 粗略上界保护
+    out.clear();
+    out.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        core::Tag t;
+        if (!read_tag(r, t)) return false;
+        out.push_back(std::move(t));
+    }
+    return true;
+}
+
+/// 写入 PasswordEntry（v2 schema）：
+///   id(i64) + entry_name(string) + account(string) + username(string) +
+///   password(string) + website(string) + note(string) + tags(vec<Tag>) +
+///   created_at(i64) + updated_at(i64) + iv(byte_vec) + tag(byte_vec)。
 void write_password_entry(Writer& w, const core::PasswordEntry& e) {
     w.write_i64(e.id);
-    w.write_string(e.website);
+    w.write_string(e.entry_name);
+    w.write_string(e.account);
     w.write_string(e.username);
     w.write_string(e.password);
+    w.write_string(e.website);
     w.write_string(e.note);
+    write_tag_vector(w, e.tags);
     w.write_i64(e.created_at);
     w.write_i64(e.updated_at);
     w.write_byte_vec(e.iv);
@@ -122,10 +168,13 @@ void write_password_entry(Writer& w, const core::PasswordEntry& e) {
 
 bool read_password_entry(Reader& r, core::PasswordEntry& out) {
     if (!r.read_i64(out.id)) return false;
-    if (!r.read_string(out.website)) return false;
+    if (!r.read_string(out.entry_name)) return false;
+    if (!r.read_string(out.account)) return false;
     if (!r.read_string(out.username)) return false;
     if (!r.read_string(out.password)) return false;
+    if (!r.read_string(out.website)) return false;
     if (!r.read_string(out.note)) return false;
+    if (!read_tag_vector(r, out.tags)) return false;
     if (!r.read_i64(out.created_at)) return false;
     if (!r.read_i64(out.updated_at)) return false;
     if (!r.read_byte_vec(out.iv)) return false;
@@ -140,6 +189,11 @@ void write_search_query(Writer& w, const core::SearchQuery& q) {
         w.write_string(f);
     }
     w.write_bool(q.case_sensitive);
+    // tag_ids（v2 新增）
+    w.write_u32(static_cast<uint32_t>(q.tag_ids.size()));
+    for (auto tid : q.tag_ids) {
+        w.write_i64(tid);
+    }
 }
 
 bool read_search_query(Reader& r, core::SearchQuery& out) {
@@ -155,6 +209,17 @@ bool read_search_query(Reader& r, core::SearchQuery& out) {
         out.fields.push_back(std::move(s));
     }
     if (!r.read_bool(out.case_sensitive)) return false;
+    // tag_ids（v2 新增）
+    uint32_t tag_count = 0;
+    if (!r.read_u32(tag_count)) return false;
+    if (tag_count > r.remaining()) return false;
+    out.tag_ids.clear();
+    out.tag_ids.reserve(tag_count);
+    for (uint32_t i = 0; i < tag_count; ++i) {
+        int64_t tid = 0;
+        if (!r.read_i64(tid)) return false;
+        out.tag_ids.push_back(tid);
+    }
     return true;
 }
 
@@ -209,6 +274,14 @@ std::string_view command_name(CommandId cmd) noexcept {
         case CommandId::ClearGeneratedRecords: return "ClearGeneratedRecords";
         case CommandId::GetGeneratorSettings:  return "GetGeneratorSettings";
         case CommandId::SetGeneratorLimit:     return "SetGeneratorLimit";
+        case CommandId::AddTag:                return "AddTag";
+        case CommandId::UpdateTag:             return "UpdateTag";
+        case CommandId::RemoveTag:             return "RemoveTag";
+        case CommandId::ListTags:              return "ListTags";
+        case CommandId::GetTag:                return "GetTag";
+        case CommandId::FindTagByName:         return "FindTagByName";
+        case CommandId::GetEntryTags:           return "GetEntryTags";
+        case CommandId::SetEntryTags:           return "SetEntryTags";
     }
     return "Unknown";
 }
@@ -300,6 +373,15 @@ template <> core::Result<core::PasswordEntry> deserialize<core::PasswordEntry>(c
     Reader r(data); core::PasswordEntry v;
     if (!read_password_entry(r, v)) return core::Result<core::PasswordEntry>::Err(make_error("deserialize<PasswordEntry>: malformed"));
     return core::Result<core::PasswordEntry>::Ok(std::move(v));
+}
+
+template <> core::ByteVec serialize<core::Tag>(const core::Tag& v) {
+    Writer w; write_tag(w, v); return w.take();
+}
+template <> core::Result<core::Tag> deserialize<core::Tag>(core::ByteSpan data) {
+    Reader r(data); core::Tag v;
+    if (!read_tag(r, v)) return core::Result<core::Tag>::Err(make_error("deserialize<Tag>: malformed"));
+    return core::Result<core::Tag>::Ok(std::move(v));
 }
 
 template <> core::ByteVec serialize<core::SearchQuery>(const core::SearchQuery& v) {
@@ -880,6 +962,216 @@ template <> core::Result<SetGeneratorLimitResponse> deserialize<SetGeneratorLimi
     }
     v.success = (b != 0);
     return core::Result<SetGeneratorLimitResponse>::Ok(v);
+}
+
+// ---------------------------------------------------------------------------
+// 标签（Tag）相关消息
+// ---------------------------------------------------------------------------
+
+namespace {
+
+void write_tag_vector_inline(Writer& w, const std::vector<core::Tag>& v) {
+    w.write_u32(static_cast<uint32_t>(v.size()));
+    for (const auto& t : v) {
+        write_tag(w, t);
+    }
+}
+
+bool read_tag_vector_inline(Reader& r, std::vector<core::Tag>& out) {
+    uint32_t count = 0;
+    if (!r.read_u32(count)) return false;
+    if (count > r.remaining()) return false;
+    out.clear();
+    out.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        core::Tag t;
+        if (!read_tag(r, t)) return false;
+        out.push_back(std::move(t));
+    }
+    return true;
+}
+
+void write_i64_vector(Writer& w, const std::vector<int64_t>& v) {
+    w.write_u32(static_cast<uint32_t>(v.size()));
+    for (auto x : v) {
+        w.write_i64(x);
+    }
+}
+
+bool read_i64_vector(Reader& r, std::vector<int64_t>& out) {
+    uint32_t count = 0;
+    if (!r.read_u32(count)) return false;
+    if (count > r.remaining()) return false;
+    out.clear();
+    out.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        int64_t x = 0;
+        if (!r.read_i64(x)) return false;
+        out.push_back(x);
+    }
+    return true;
+}
+
+}  // anonymous namespace
+
+// AddTagRequest：tag(Tag)
+template <> core::ByteVec serialize<AddTagRequest>(const AddTagRequest& v) {
+    Writer w; write_tag(w, v.tag); return w.take();
+}
+template <> core::Result<AddTagRequest> deserialize<AddTagRequest>(core::ByteSpan data) {
+    Reader r(data); AddTagRequest v;
+    if (!read_tag(r, v.tag)) return core::Result<AddTagRequest>::Err(make_error("deserialize<AddTagRequest>: malformed"));
+    return core::Result<AddTagRequest>::Ok(std::move(v));
+}
+
+// UpdateTagRequest：tag(Tag)
+template <> core::ByteVec serialize<UpdateTagRequest>(const UpdateTagRequest& v) {
+    Writer w; write_tag(w, v.tag); return w.take();
+}
+template <> core::Result<UpdateTagRequest> deserialize<UpdateTagRequest>(core::ByteSpan data) {
+    Reader r(data); UpdateTagRequest v;
+    if (!read_tag(r, v.tag)) return core::Result<UpdateTagRequest>::Err(make_error("deserialize<UpdateTagRequest>: malformed"));
+    return core::Result<UpdateTagRequest>::Ok(std::move(v));
+}
+
+// RemoveTagRequest：id(i64)
+template <> core::ByteVec serialize<RemoveTagRequest>(const RemoveTagRequest& v) {
+    Writer w; w.write_i64(v.id); return w.take();
+}
+template <> core::Result<RemoveTagRequest> deserialize<RemoveTagRequest>(core::ByteSpan data) {
+    Reader r(data); RemoveTagRequest v;
+    if (!r.read_i64(v.id)) return core::Result<RemoveTagRequest>::Err(make_error("deserialize<RemoveTagRequest>: malformed"));
+    return core::Result<RemoveTagRequest>::Ok(v);
+}
+
+// ListTagsRequest：空
+template <> core::ByteVec serialize<ListTagsRequest>(const ListTagsRequest&) {
+    return {};
+}
+template <> core::Result<ListTagsRequest> deserialize<ListTagsRequest>(core::ByteSpan) {
+    return core::Result<ListTagsRequest>::Ok(ListTagsRequest{});
+}
+
+// GetTagRequest：id(i64)
+template <> core::ByteVec serialize<GetTagRequest>(const GetTagRequest& v) {
+    Writer w; w.write_i64(v.id); return w.take();
+}
+template <> core::Result<GetTagRequest> deserialize<GetTagRequest>(core::ByteSpan data) {
+    Reader r(data); GetTagRequest v;
+    if (!r.read_i64(v.id)) return core::Result<GetTagRequest>::Err(make_error("deserialize<GetTagRequest>: malformed"));
+    return core::Result<GetTagRequest>::Ok(v);
+}
+
+// FindTagByNameRequest：name(string)
+template <> core::ByteVec serialize<FindTagByNameRequest>(const FindTagByNameRequest& v) {
+    Writer w; w.write_string(v.name); return w.take();
+}
+template <> core::Result<FindTagByNameRequest> deserialize<FindTagByNameRequest>(core::ByteSpan data) {
+    Reader r(data); FindTagByNameRequest v;
+    if (!r.read_string(v.name)) return core::Result<FindTagByNameRequest>::Err(make_error("deserialize<FindTagByNameRequest>: malformed"));
+    return core::Result<FindTagByNameRequest>::Ok(std::move(v));
+}
+
+// GetEntryTagsRequest：entry_id(i64)
+template <> core::ByteVec serialize<GetEntryTagsRequest>(const GetEntryTagsRequest& v) {
+    Writer w; w.write_i64(v.entry_id); return w.take();
+}
+template <> core::Result<GetEntryTagsRequest> deserialize<GetEntryTagsRequest>(core::ByteSpan data) {
+    Reader r(data); GetEntryTagsRequest v;
+    if (!r.read_i64(v.entry_id)) return core::Result<GetEntryTagsRequest>::Err(make_error("deserialize<GetEntryTagsRequest>: malformed"));
+    return core::Result<GetEntryTagsRequest>::Ok(v);
+}
+
+// SetEntryTagsRequest：entry_id(i64) + tag_ids(vec<i64>)
+template <> core::ByteVec serialize<SetEntryTagsRequest>(const SetEntryTagsRequest& v) {
+    Writer w;
+    w.write_i64(v.entry_id);
+    write_i64_vector(w, v.tag_ids);
+    return w.take();
+}
+template <> core::Result<SetEntryTagsRequest> deserialize<SetEntryTagsRequest>(core::ByteSpan data) {
+    Reader r(data); SetEntryTagsRequest v;
+    if (!r.read_i64(v.entry_id)) return core::Result<SetEntryTagsRequest>::Err(make_error("deserialize<SetEntryTagsRequest>: malformed"));
+    if (!read_i64_vector(r, v.tag_ids)) return core::Result<SetEntryTagsRequest>::Err(make_error("deserialize<SetEntryTagsRequest>: malformed"));
+    return core::Result<SetEntryTagsRequest>::Ok(std::move(v));
+}
+
+// AddTagResponse：tag(Tag)
+template <> core::ByteVec serialize<AddTagResponse>(const AddTagResponse& v) {
+    Writer w; write_tag(w, v.tag); return w.take();
+}
+template <> core::Result<AddTagResponse> deserialize<AddTagResponse>(core::ByteSpan data) {
+    Reader r(data); AddTagResponse v;
+    if (!read_tag(r, v.tag)) return core::Result<AddTagResponse>::Err(make_error("deserialize<AddTagResponse>: malformed"));
+    return core::Result<AddTagResponse>::Ok(std::move(v));
+}
+
+// UpdateTagResponse：tag(Tag)
+template <> core::ByteVec serialize<UpdateTagResponse>(const UpdateTagResponse& v) {
+    Writer w; write_tag(w, v.tag); return w.take();
+}
+template <> core::Result<UpdateTagResponse> deserialize<UpdateTagResponse>(core::ByteSpan data) {
+    Reader r(data); UpdateTagResponse v;
+    if (!read_tag(r, v.tag)) return core::Result<UpdateTagResponse>::Err(make_error("deserialize<UpdateTagResponse>: malformed"));
+    return core::Result<UpdateTagResponse>::Ok(std::move(v));
+}
+
+// RemoveTagResponse：空
+template <> core::ByteVec serialize<RemoveTagResponse>(const RemoveTagResponse&) {
+    return {};
+}
+template <> core::Result<RemoveTagResponse> deserialize<RemoveTagResponse>(core::ByteSpan data) {
+    if (!data.empty()) return core::Result<RemoveTagResponse>::Err(make_error("deserialize<RemoveTagResponse>: expected empty payload"));
+    return core::Result<RemoveTagResponse>::Ok(RemoveTagResponse{});
+}
+
+// ListTagsResponse：tags(vec<Tag>)
+template <> core::ByteVec serialize<ListTagsResponse>(const ListTagsResponse& v) {
+    Writer w; write_tag_vector_inline(w, v.tags); return w.take();
+}
+template <> core::Result<ListTagsResponse> deserialize<ListTagsResponse>(core::ByteSpan data) {
+    Reader r(data); ListTagsResponse v;
+    if (!read_tag_vector_inline(r, v.tags)) return core::Result<ListTagsResponse>::Err(make_error("deserialize<ListTagsResponse>: malformed"));
+    return core::Result<ListTagsResponse>::Ok(std::move(v));
+}
+
+// GetTagResponse：tag(Tag)
+template <> core::ByteVec serialize<GetTagResponse>(const GetTagResponse& v) {
+    Writer w; write_tag(w, v.tag); return w.take();
+}
+template <> core::Result<GetTagResponse> deserialize<GetTagResponse>(core::ByteSpan data) {
+    Reader r(data); GetTagResponse v;
+    if (!read_tag(r, v.tag)) return core::Result<GetTagResponse>::Err(make_error("deserialize<GetTagResponse>: malformed"));
+    return core::Result<GetTagResponse>::Ok(std::move(v));
+}
+
+// FindTagByNameResponse：tag(Tag)
+template <> core::ByteVec serialize<FindTagByNameResponse>(const FindTagByNameResponse& v) {
+    Writer w; write_tag(w, v.tag); return w.take();
+}
+template <> core::Result<FindTagByNameResponse> deserialize<FindTagByNameResponse>(core::ByteSpan data) {
+    Reader r(data); FindTagByNameResponse v;
+    if (!read_tag(r, v.tag)) return core::Result<FindTagByNameResponse>::Err(make_error("deserialize<FindTagByNameResponse>: malformed"));
+    return core::Result<FindTagByNameResponse>::Ok(std::move(v));
+}
+
+// GetEntryTagsResponse：tags(vec<Tag>)
+template <> core::ByteVec serialize<GetEntryTagsResponse>(const GetEntryTagsResponse& v) {
+    Writer w; write_tag_vector_inline(w, v.tags); return w.take();
+}
+template <> core::Result<GetEntryTagsResponse> deserialize<GetEntryTagsResponse>(core::ByteSpan data) {
+    Reader r(data); GetEntryTagsResponse v;
+    if (!read_tag_vector_inline(r, v.tags)) return core::Result<GetEntryTagsResponse>::Err(make_error("deserialize<GetEntryTagsResponse>: malformed"));
+    return core::Result<GetEntryTagsResponse>::Ok(std::move(v));
+}
+
+// SetEntryTagsResponse：空
+template <> core::ByteVec serialize<SetEntryTagsResponse>(const SetEntryTagsResponse&) {
+    return {};
+}
+template <> core::Result<SetEntryTagsResponse> deserialize<SetEntryTagsResponse>(core::ByteSpan data) {
+    if (!data.empty()) return core::Result<SetEntryTagsResponse>::Err(make_error("deserialize<SetEntryTagsResponse>: expected empty payload"));
+    return core::Result<SetEntryTagsResponse>::Ok(SetEntryTagsResponse{});
 }
 
 // ErrorResponse 在序列化时加魔数前缀，使其字节布局与任何正常响应不兼容。

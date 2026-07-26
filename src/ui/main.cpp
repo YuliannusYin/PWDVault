@@ -16,6 +16,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QFont>
 #include <QIcon>
 #include <QMessageBox>
 #include <QProcess>
@@ -53,6 +54,30 @@ int main(int argc, char* argv[]) {
     // 全局窗口图标：影响任务栏、标题栏、Alt+Tab 预览。
     // QIcon 会按需自动缩放，保留原始宽高比，四周透明填充。
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/logo.png")));
+
+    // 全局字体：用 QFont::setFamilies 启用字符级回退（Qt 6+）。
+    //
+    // 注意：Qt 的 QSS font-family 列表对「缺失字符」的回退不可靠——
+    // QSS 选中列表里第一个能加载的字体（如 Segoe UI）后就停止，对于该字体
+    // 不含的字符（中文），不会自动回退到列表里下一个中文字体，而是走系统
+    // 默认 fallback。Windows 上这个 fallback 通常是 SimSun 点阵字，导致
+    // 中文渲染发虚、字重不均。
+    //
+    // QFont::setFamilies 是真正的字符级回退链，与浏览器 CSS 行为一致：
+    // 对每个字符按列表顺序找第一个能渲染的字体。英文走 Segoe UI（锐利），
+    // 中文走 Microsoft YaHei UI（清晰抗锯齿）。
+    //
+    // QSS 中的 font-size: 13px 会覆盖此处的字号；这里只设默认 9pt 作为
+    // QSS 未覆盖控件（如原生对话框）的兜底。
+    QFont app_font;
+    app_font.setFamilies({
+        QStringLiteral("Segoe UI Variable"),   // Win11 首选
+        QStringLiteral("Segoe UI"),            // Win10 首选
+        QStringLiteral("Microsoft YaHei UI"),  // 中文回退（UI 变体，更紧凑）
+        QStringLiteral("Microsoft YaHei"),     // 中文回退（无 UI 变体时的兜底）
+    });
+    app_font.setPointSize(9);
+    QApplication::setFont(app_font);
 
     // 加载持久化主题（dark / light qss），必须在 MainWindow 创建前调用
     pwdvault::ui::Theme::load_initial_theme(&app);

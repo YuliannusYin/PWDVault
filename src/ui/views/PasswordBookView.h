@@ -4,9 +4,9 @@
 //
 // PwdVault 密码本视图（新设计）。master-detail 布局：
 //   - 顶部搜索行：搜索框（带 search 图标前缀）+ 字段下拉 + 刷新按钮
-//   - 左侧 340px 列表：每条目 = 头像（首字母）+ 网站名 + 用户名 + chevron-right
-//   - 右侧详情：头部（大头像 + 标题 + 副标题 + 复制/编辑/删除按钮）
-//                + 字段网格（网站/用户名/密码（带可见性切换）/备注/时间）
+//   - 左侧 340px 列表：每条目 = 头像（首字母）+ 条目名 + 账号 + chevron-right
+//   - 右侧详情：头部（大头像 + 条目名 + 账号 + 复制/编辑/删除按钮）
+//                + 字段网格（条目名/账号/用户名/密码（带可见性切换）/网站/标签/备注（markdown）/时间）
 //                + 外部链接按钮
 //
 // 进入视图时自动调用 list_entries 加载；条目数变化时 emit entry_count_changed。
@@ -26,9 +26,12 @@ class QListWidget;
 class QListWidgetItem;
 class QPushButton;
 class QScrollArea;
+class QTextBrowser;
+class QWidget;
 
 namespace pwdvault::ui {
 
+class FlowLayout;
 class IpcClient;
 
 class PasswordBookView : public QWidget {
@@ -52,7 +55,7 @@ private slots:
     void on_refresh_clicked();
     void on_search_text_changed(const QString& text);
     void on_list_item_changed(QListWidgetItem* current, QListWidgetItem* previous);
-    void on_copy_username_clicked();
+    void on_copy_account_clicked();
     void on_copy_password_clicked();
     void on_toggle_password_clicked();
     void on_edit_clicked();
@@ -87,22 +90,28 @@ private:
     QLabel* detail_avatar_ = nullptr;
     QLabel* detail_title_ = nullptr;
     QLabel* detail_subtitle_ = nullptr;
-    QPushButton* copy_user_btn_ = nullptr;
+    QPushButton* copy_account_btn_ = nullptr;
     QPushButton* copy_pwd_btn_ = nullptr;
     QPushButton* edit_btn_ = nullptr;
     QPushButton* delete_btn_ = nullptr;
 
-    QLabel* field_website_ = nullptr;
+    QLabel* field_entry_name_ = nullptr;
+    QLabel* field_account_ = nullptr;
     QLabel* field_username_ = nullptr;
+    QLabel* field_website_ = nullptr;
     QLabel* field_password_ = nullptr;
-    QLabel* field_note_ = nullptr;
+    QWidget* field_tags_container_ = nullptr;  ///< 标签容器（用 FlowLayout 展示只读芯片）
+    FlowLayout* field_tags_layout_ = nullptr;
     QLabel* field_created_ = nullptr;
     QLabel* field_updated_ = nullptr;
+    QTextBrowser* field_note_ = nullptr;  ///< 备注（markdown 渲染）
     QLabel* strength_badge_ = nullptr;
     QPushButton* toggle_pwd_btn_ = nullptr;
-    QPushButton* copy_website_btn_ = nullptr;
+    QPushButton* copy_entry_name_btn_ = nullptr;
+    QPushButton* copy_account_field_btn_ = nullptr;
     QPushButton* copy_user_field_btn_ = nullptr;
     QPushButton* copy_pwd_field_btn_ = nullptr;
+    QPushButton* copy_website_btn_ = nullptr;
     QPushButton* open_external_btn_ = nullptr;
 
     // 空状态提示

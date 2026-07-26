@@ -36,7 +36,7 @@ namespace pwdvault::ui {
 namespace {
 
 /// 应用版本号。
-constexpr const char* kAppVersion = "3.1.0";
+constexpr const char* kAppVersion = "3.2.0";
 
 /// GitHub 项目主页 URL。
 constexpr const char* kGitHubUrl = "https://github.com/YuliannusYin/PWDVault";

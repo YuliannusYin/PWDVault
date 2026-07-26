@@ -36,6 +36,8 @@ pwdvault::core::ByteVec make_bytes(const std::string& s) {
 pwdvault::core::PasswordEntry make_sample_entry() {
     pwdvault::core::PasswordEntry e;
     e.id = 42;
+    e.entry_name = "GitHub";
+    e.account = "alice";
     e.website = "github.com";
     e.username = "alice";
     e.password = "p@ssw0rd!";

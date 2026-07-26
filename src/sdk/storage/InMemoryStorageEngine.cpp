@@ -3,7 +3,7 @@
 // InMemoryStorageEngine.cpp
 //
 // 纯内存存储引擎实现。所有方法线程安全（mutex 串行化）。
-// 事务通过快照实现：begin 时深拷贝 entries_ 与 next_id_，rollback 时恢复；
+// 事务通过快照实现：begin 时深拷贝全部状态，rollback 时恢复；
 // 不支持嵌套事务。所有 mutating 方法在事务外也照常工作。
 // =============================================================================
 #include "InMemoryStorageEngine.h"
@@ -64,6 +64,20 @@ core::Result<core::PasswordEntry> InMemoryStorageEngine::add_entry(
     const int64_t ts = now_seconds();
     out.created_at = ts;
     out.updated_at = ts;
+
+    // 同步标签关联：entry.tags 中的 id 写入 entry_tags_。
+    std::vector<int64_t> tag_ids;
+    tag_ids.reserve(out.tags.size());
+    for (const auto& t : out.tags) {
+        if (t.id != 0) tag_ids.push_back(t.id);
+    }
+    auto tag_err = set_entry_tags_unlocked(out.id, tag_ids);
+    if (!tag_err.ok()) {
+        return core::Result<core::PasswordEntry>::Err(tag_err);
+    }
+    // 返回前填充完整 tags（含 name/color 等元数据）
+    out.tags = read_entry_tags_unlocked(out.id);
+
     entries_.push_back(out);
     return core::Result<core::PasswordEntry>::Ok(std::move(out));
 }
@@ -84,6 +98,19 @@ core::Result<core::PasswordEntry> InMemoryStorageEngine::update_entry(
     core::PasswordEntry out = entry;
     out.created_at = it->created_at;  // 保留原始创建时间
     out.updated_at = now_seconds();
+
+    // 同步标签关联（全量替换）
+    std::vector<int64_t> tag_ids;
+    tag_ids.reserve(out.tags.size());
+    for (const auto& t : out.tags) {
+        if (t.id != 0) tag_ids.push_back(t.id);
+    }
+    auto tag_err = set_entry_tags_unlocked(out.id, tag_ids);
+    if (!tag_err.ok()) {
+        return core::Result<core::PasswordEntry>::Err(tag_err);
+    }
+    out.tags = read_entry_tags_unlocked(out.id);
+
     *it = out;
     return core::Result<core::PasswordEntry>::Ok(std::move(out));
 }
@@ -96,6 +123,12 @@ core::Error InMemoryStorageEngine::remove_entry(int64_t id) {
                            "remove_entry: id not found");
     }
     entries_.erase(it);
+    // 级联清理 entry_tags 关联
+    auto remove_it = std::remove_if(entry_tags_.begin(), entry_tags_.end(),
+                                    [id](const std::pair<int64_t, int64_t>& p) {
+                                        return p.first == id;
+                                    });
+    entry_tags_.erase(remove_it, entry_tags_.end());
     return core::Error{};
 }
 
@@ -106,20 +139,23 @@ core::Result<core::PasswordEntry> InMemoryStorageEngine::get_entry(int64_t id) {
         return core::Result<core::PasswordEntry>::Err(
             core::Error(core::ErrorCode::NotFound, "get_entry: id not found"));
     }
-    return core::Result<core::PasswordEntry>::Ok(*it);
+    core::PasswordEntry out = *it;
+    fill_entry_tags_unlocked(out);
+    return core::Result<core::PasswordEntry>::Ok(std::move(out));
 }
 
 core::Result<std::vector<core::PasswordEntry>>
 InMemoryStorageEngine::search_entries(const core::SearchQuery& query) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // 确定要搜索的字段集合；password 字段视为已加密字节，不参与搜索。
+    // 字段白名单：password 是密文，不参与搜索。
     auto is_searchable_field = [](const std::string& f) {
-        return f == "website" || f == "username" || f == "note";
+        return f == "entry_name" || f == "account" || f == "username" ||
+               f == "website" || f == "note";
     };
     std::vector<std::string> fields;
     if (query.fields.empty()) {
-        fields = {"website", "username", "note"};
+        fields = {"entry_name", "account", "username", "website", "note"};
     } else {
         for (const auto& f : query.fields) {
             if (is_searchable_field(f)) {
@@ -128,26 +164,55 @@ InMemoryStorageEngine::search_entries(const core::SearchQuery& query) {
         }
     }
 
+    // 预构建 entry_id → 是否匹配 tag 过滤的索引
+    // tag_ids 为空时不按标签过滤
+    auto entry_matches_tags = [this](int64_t entry_id,
+                                      const std::vector<int64_t>& tag_ids) {
+        if (tag_ids.empty()) return true;
+        for (auto tid : tag_ids) {
+            // entry_id 是否关联了 tid
+            auto found = std::find_if(
+                entry_tags_.begin(), entry_tags_.end(),
+                [entry_id, tid](const std::pair<int64_t, int64_t>& p) {
+                    return p.first == entry_id && p.second == tid;
+                });
+            if (found != entry_tags_.end()) return true;  // OR 语义
+        }
+        return false;
+    };
+
     std::vector<core::PasswordEntry> results;
     for (const auto& e : entries_) {
-        bool matched = false;
-        for (const auto& f : fields) {
-            std::string value;
-            if (f == "website") {
-                value = e.website;
-            } else if (f == "username") {
-                value = e.username;
-            } else if (f == "note") {
-                value = e.note;
-            }
-            if (contains_substring(value, query.text, query.case_sensitive)) {
-                matched = true;
-                break;  // OR 语义：任一字段命中即纳入
+        // 文本匹配（OR 语义：任一字段命中即纳入）
+        bool text_matched = false;
+        if (query.text.empty()) {
+            text_matched = true;
+        } else {
+            for (const auto& f : fields) {
+                std::string value;
+                if (f == "entry_name") {
+                    value = e.entry_name;
+                } else if (f == "account") {
+                    value = e.account;
+                } else if (f == "username") {
+                    value = e.username;
+                } else if (f == "website") {
+                    value = e.website;
+                } else if (f == "note") {
+                    value = e.note;
+                }
+                if (contains_substring(value, query.text, query.case_sensitive)) {
+                    text_matched = true;
+                    break;
+                }
             }
         }
-        if (matched) {
-            results.push_back(e);
-        }
+        if (!text_matched) continue;
+
+        // 标签过滤
+        if (!entry_matches_tags(e.id, query.tag_ids)) continue;
+
+        results.push_back(e);
     }
 
     // 按 created_at 倒序，与 SQLite 实现保持一致。
@@ -155,6 +220,10 @@ InMemoryStorageEngine::search_entries(const core::SearchQuery& query) {
               [](const core::PasswordEntry& a, const core::PasswordEntry& b) {
                   return a.created_at > b.created_at;
               });
+    // 填充 tags
+    for (auto& e : results) {
+        fill_entry_tags_unlocked(e);
+    }
     return core::Result<std::vector<core::PasswordEntry>>::Ok(std::move(results));
 }
 
@@ -166,6 +235,9 @@ InMemoryStorageEngine::list_entries() {
               [](const core::PasswordEntry& a, const core::PasswordEntry& b) {
                   return a.created_at > b.created_at;
               });
+    for (auto& e : results) {
+        fill_entry_tags_unlocked(e);
+    }
     return core::Result<std::vector<core::PasswordEntry>>::Ok(std::move(results));
 }
 
@@ -182,6 +254,9 @@ core::Error InMemoryStorageEngine::begin_transaction() {
     s.gen_records = gen_records_;
     s.gen_next_id = gen_next_id_;
     s.settings = settings_;
+    s.tags = tags_;
+    s.tag_next_id = tag_next_id_;
+    s.entry_tags = entry_tags_;
     txn_snapshot_ = std::move(s);
     return core::Error{};
 }
@@ -207,6 +282,9 @@ core::Error InMemoryStorageEngine::rollback_transaction() {
     gen_records_ = std::move(txn_snapshot_->gen_records);
     gen_next_id_ = txn_snapshot_->gen_next_id;
     settings_ = std::move(txn_snapshot_->settings);
+    tags_ = std::move(txn_snapshot_->tags);
+    tag_next_id_ = txn_snapshot_->tag_next_id;
+    entry_tags_ = std::move(txn_snapshot_->entry_tags);
     txn_snapshot_.reset();
     return core::Error{};
 }
@@ -319,6 +397,180 @@ core::Error InMemoryStorageEngine::set_setting(const std::string& key,
         it->second = value;
     }
     return core::Error{};
+}
+
+// =============================================================================
+// 标签（Tag）与 entry-tag 关联
+// =============================================================================
+
+std::vector<core::Tag>::iterator
+InMemoryStorageEngine::find_tag_by_id_unlocked(int64_t id) {
+    return std::find_if(tags_.begin(), tags_.end(),
+                        [id](const core::Tag& t) { return t.id == id; });
+}
+
+std::vector<core::Tag> InMemoryStorageEngine::read_entry_tags_unlocked(
+    int64_t entry_id) const {
+    std::vector<core::Tag> result;
+    for (const auto& [eid, tid] : entry_tags_) {
+        if (eid != entry_id) continue;
+        // 在 tags_ 中查找对应的 Tag
+        auto it = std::find_if(tags_.begin(), tags_.end(),
+                                [tid](const core::Tag& t) { return t.id == tid; });
+        if (it != tags_.end()) {
+            result.push_back(*it);
+        }
+    }
+    // 按 name 升序，与 SQLite 实现保持一致
+    std::sort(result.begin(), result.end(),
+              [](const core::Tag& a, const core::Tag& b) { return a.name < b.name; });
+    return result;
+}
+
+core::Error InMemoryStorageEngine::set_entry_tags_unlocked(
+    int64_t entry_id, const std::vector<int64_t>& tag_ids) {
+    // 1. 删除现有所有关联
+    auto remove_it = std::remove_if(
+        entry_tags_.begin(), entry_tags_.end(),
+        [entry_id](const std::pair<int64_t, int64_t>& p) {
+            return p.first == entry_id;
+        });
+    entry_tags_.erase(remove_it, entry_tags_.end());
+
+    // 2. 去重写入新关联（跳过 id==0 与不存在的 tag_id）
+    if (tag_ids.empty()) return core::Error{};
+    std::vector<int64_t> unique_ids;
+    unique_ids.reserve(tag_ids.size());
+    for (auto tid : tag_ids) {
+        if (tid == 0) continue;
+        if (std::find(unique_ids.begin(), unique_ids.end(), tid) == unique_ids.end()) {
+            unique_ids.push_back(tid);
+        }
+    }
+    for (auto tid : unique_ids) {
+        // 静默跳过不存在的 tag_id
+        auto it = std::find_if(tags_.begin(), tags_.end(),
+                                [tid](const core::Tag& t) { return t.id == tid; });
+        if (it == tags_.end()) continue;
+        entry_tags_.emplace_back(entry_id, tid);
+    }
+    return core::Error{};
+}
+
+void InMemoryStorageEngine::fill_entry_tags_unlocked(core::PasswordEntry& entry) const {
+    entry.tags = read_entry_tags_unlocked(entry.id);
+}
+
+core::Result<core::Tag> InMemoryStorageEngine::add_tag(const core::Tag& tag) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (tag.name.empty()) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::InvalidArgument, "add_tag: name must not be empty"));
+    }
+    // 名称唯一性检查（大小写敏感）
+    auto it = std::find_if(tags_.begin(), tags_.end(),
+                            [&tag](const core::Tag& t) { return t.name == tag.name; });
+    if (it != tags_.end()) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::AlreadyExists,
+                        "add_tag: tag name already exists"));
+    }
+    core::Tag out = tag;
+    out.id = tag_next_id_++;
+    const int64_t ts = now_seconds();
+    out.created_at = ts;
+    out.updated_at = ts;
+    tags_.push_back(out);
+    return core::Result<core::Tag>::Ok(std::move(out));
+}
+
+core::Result<core::Tag> InMemoryStorageEngine::update_tag(const core::Tag& tag) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (tag.id == 0) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::InvalidArgument, "update_tag: id must not be 0"));
+    }
+    if (tag.name.empty()) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::InvalidArgument, "update_tag: name must not be empty"));
+    }
+    auto it = find_tag_by_id_unlocked(tag.id);
+    if (it == tags_.end()) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::NotFound, "update_tag: id not found"));
+    }
+    // 名称唯一性检查（排除自身）
+    auto dup = std::find_if(tags_.begin(), tags_.end(),
+                            [&tag](const core::Tag& t) {
+                                return t.name == tag.name && t.id != tag.id;
+                            });
+    if (dup != tags_.end()) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::AlreadyExists,
+                        "update_tag: tag name already exists"));
+    }
+    core::Tag out = tag;
+    out.created_at = it->created_at;  // 保留原始创建时间
+    out.updated_at = now_seconds();
+    *it = out;
+    return core::Result<core::Tag>::Ok(std::move(out));
+}
+
+core::Error InMemoryStorageEngine::remove_tag(int64_t id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = find_tag_by_id_unlocked(id);
+    if (it == tags_.end()) {
+        return core::Error(core::ErrorCode::NotFound, "remove_tag: id not found");
+    }
+    tags_.erase(it);
+    // 级联清理 entry_tags 关联
+    auto remove_it = std::remove_if(entry_tags_.begin(), entry_tags_.end(),
+                                    [id](const std::pair<int64_t, int64_t>& p) {
+                                        return p.second == id;
+                                    });
+    entry_tags_.erase(remove_it, entry_tags_.end());
+    return core::Error{};
+}
+
+core::Result<std::vector<core::Tag>> InMemoryStorageEngine::list_tags() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<core::Tag> results = tags_;
+    std::sort(results.begin(), results.end(),
+              [](const core::Tag& a, const core::Tag& b) { return a.name < b.name; });
+    return core::Result<std::vector<core::Tag>>::Ok(std::move(results));
+}
+
+core::Result<core::Tag> InMemoryStorageEngine::get_tag(int64_t id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = find_tag_by_id_unlocked(id);
+    if (it == tags_.end()) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::NotFound, "get_tag: id not found"));
+    }
+    return core::Result<core::Tag>::Ok(*it);
+}
+
+core::Result<core::Tag> InMemoryStorageEngine::find_tag_by_name(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = std::find_if(tags_.begin(), tags_.end(),
+                            [&name](const core::Tag& t) { return t.name == name; });
+    if (it == tags_.end()) {
+        return core::Result<core::Tag>::Err(
+            core::Error(core::ErrorCode::NotFound, "find_tag_by_name: not found"));
+    }
+    return core::Result<core::Tag>::Ok(*it);
+}
+
+core::Result<std::vector<core::Tag>>
+InMemoryStorageEngine::get_entry_tags(int64_t entry_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return core::Result<std::vector<core::Tag>>::Ok(read_entry_tags_unlocked(entry_id));
+}
+
+core::Error InMemoryStorageEngine::set_entry_tags(int64_t entry_id,
+                                                    const std::vector<int64_t>& tag_ids) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return set_entry_tags_unlocked(entry_id, tag_ids);
 }
 
 }  // namespace pwdvault::storage

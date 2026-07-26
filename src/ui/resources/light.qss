@@ -26,9 +26,11 @@
    ============================================================================= */
 
 /* ── 全局基础 ── */
+/* font-family 不在此声明：Qt 的 QSS 对缺失字符的回退不可靠，会走系统默认
+   fallback（Windows 上常为 SimSun 点阵字，导致中文发虚）。改由 main.cpp 中
+   QApplication::setFont + QFont::setFamilies 设置字符级回退链
+   （Segoe UI → Microsoft YaHei UI），此处只保留字号。 */
 * {
-    font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI",
-                 "Microsoft YaHei", system-ui, sans-serif;
     font-size: 13px;
     outline: none;
 }
@@ -97,21 +99,22 @@ QPushButton:disabled {
     border-color: rgba(15, 22, 38, 0.06);
 }
 
-/* 主按钮（primary） */
+/* 主按钮（primary）：浅色主题用黑色背景 + 白色文字，对比强烈 */
 QPushButton#primaryButton,
 QPushButton[cssClass="primary"] {
-    background-color: #2f5fff;
+    background-color: #0f1626;
     color: #ffffff;
     border: none;
     font-weight: 500;
+    padding: 0 18px;
 }
 QPushButton#primaryButton:hover,
 QPushButton[cssClass="primary"]:hover {
-    background-color: #4774ff;
+    background-color: #2a3344;
 }
 QPushButton#primaryButton:pressed,
 QPushButton[cssClass="primary"]:pressed {
-    background-color: #2855e6;
+    background-color: #000000;
 }
 QPushButton#primaryButton:disabled,
 QPushButton[cssClass="primary"]:disabled {
@@ -352,6 +355,8 @@ QLabel[cssClass="avatar"] {
     min-height: 40px;
     max-width: 40px;
     max-height: 40px;
+    padding: 0;
+    margin: 0;
 }
 QLabel[cssClass="avatarLg"] {
     background-color: rgba(47, 95, 255, 0.10);
@@ -364,6 +369,8 @@ QLabel[cssClass="avatarLg"] {
     min-height: 56px;
     max-width: 56px;
     max-height: 56px;
+    padding: 0;
+    margin: 0;
 }
 
 /* ── 卡片容器（唯一"层级"标识，与主背景区分） ── */
@@ -812,4 +819,141 @@ QFrame#formCard QLineEdit,
 QFrame#formCard QSpinBox,
 QFrame#formCard QPlainTextEdit {
     background-color: #EDF1F7;
+}
+
+/* =============================================================================
+   标签芯片（tag chip）样式
+   ============================================================================= */
+QFrame[cssClass="tagChip"] {
+    background-color: rgba(59, 107, 255, 0.10);
+    border: 1px solid rgba(59, 107, 255, 0.22);
+    border-radius: 12px;
+    padding: 0;
+    min-height: 22px;
+    max-height: 22px;
+}
+QFrame[cssClass="tagChip"]:hover {
+    background-color: rgba(59, 107, 255, 0.16);
+    border-color: rgba(59, 107, 255, 0.30);
+}
+QLabel[cssClass="tagChipName"] {
+    background: transparent;
+    color: #2a55c8;
+    font-size: 12px;
+    padding: 0 2px;
+}
+/* 芯片删除按钮（×） */
+QToolButton#tagChipRemove {
+    background: transparent;
+    border: none;
+    color: #2a55c8;
+    font-size: 14px;
+    padding: 0;
+    margin: 0;
+    min-width: 16px;
+    min-height: 16px;
+    max-width: 16px;
+    max-height: 16px;
+}
+QToolButton#tagChipRemove:hover {
+    color: #ffffff;
+    background: rgba(15, 22, 38, 0.10);
+    border-radius: 8px;
+}
+
+/* 标签输入容器（透明背景，让 chip 融入父容器） */
+QWidget[cssClass="tagInput"] {
+    background: transparent;
+    border: none;
+}
+
+/* =============================================================================
+   列表项小标签芯片（listTagChip）—— 比 detail 区的 tagChip 更紧凑
+   ============================================================================= */
+QLabel[cssClass="listTagChip"] {
+    background-color: rgba(47, 95, 255, 0.10);
+    color: #2a55c8;
+    border: 1px solid rgba(47, 95, 255, 0.20);
+    border-radius: 9px;
+    padding: 1px 6px;
+    font-size: 10px;
+    max-height: 18px;
+}
+QLabel[cssClass="listTagMore"] {
+    background: transparent;
+    color: #5c6678;
+    font-size: 10px;
+    padding: 1px 2px;
+}
+
+/* =============================================================================
+   Markdown 渲染控件（QTextBrowser）
+   ============================================================================= */
+QTextBrowser[cssClass="markdownView"] {
+    background-color: rgba(15, 22, 38, 0.02);
+    color: #0f1626;
+    border: 1px solid rgba(15, 22, 38, 0.06);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+}
+QTextBrowser[cssClass="markdownView"] h1 {
+    color: #0f1626;
+    font-size: 18px;
+    font-weight: 600;
+    margin: 12px 0 6px 0;
+}
+QTextBrowser[cssClass="markdownView"] h2 {
+    color: #0f1626;
+    font-size: 16px;
+    font-weight: 600;
+    margin: 10px 0 4px 0;
+}
+QTextBrowser[cssClass="markdownView"] h3 {
+    color: #0f1626;
+    font-size: 14px;
+    font-weight: 600;
+    margin: 8px 0 4px 0;
+}
+QTextBrowser[cssClass="markdownView"] code {
+    background-color: rgba(15, 22, 38, 0.06);
+    color: #c25400;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+}
+QTextBrowser[cssClass="markdownView"] pre {
+    background-color: rgba(15, 22, 38, 0.04);
+    border: 1px solid rgba(15, 22, 38, 0.06);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin: 6px 0;
+}
+QTextBrowser[cssClass="markdownView"] pre code {
+    background: transparent;
+    color: #0f1626;
+    padding: 0;
+    border-radius: 0;
+}
+QTextBrowser[cssClass="markdownView"] a {
+    color: #2a55c8;
+    text-decoration: none;
+}
+QTextBrowser[cssClass="markdownView"] a:hover {
+    text-decoration: underline;
+}
+QTextBrowser[cssClass="markdownView"] ul,
+QTextBrowser[cssClass="markdownView"] ol {
+    margin: 4px 0;
+    padding-left: 20px;
+}
+QTextBrowser[cssClass="markdownView"] li {
+    margin: 2px 0;
+}
+QTextBrowser[cssClass="markdownView"] p {
+    margin: 4px 0;
+}
+QTextBrowser[cssClass="markdownView"] .muted {
+    color: #6b7585;
 }
