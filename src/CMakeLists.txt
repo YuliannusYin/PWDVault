@@ -13,8 +13,7 @@
 
 message(STATUS "PwdVault: 进入 src/ 子目录")
 
-# 各子模块按依赖顺序加入：sdk → service / ui / migrate
+# 各子模块按依赖顺序加入：sdk → service / ui
 add_subdirectory(sdk)
 add_subdirectory(service)
 add_subdirectory(ui)
-add_subdirectory(migrate)

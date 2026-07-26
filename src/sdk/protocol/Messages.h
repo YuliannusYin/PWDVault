@@ -151,6 +151,50 @@ struct SetGeneratorLimitRequest {
 };
 
 // ---------------------------------------------------------------------------
+// 标签（Tag）相关请求
+// ---------------------------------------------------------------------------
+
+/// 新增标签请求。tag.id 通常为 0，由 service 分配后返回。
+struct AddTagRequest {
+    core::Tag tag;
+};
+
+/// 更新已存在标签请求。tag.id 必须非 0。
+struct UpdateTagRequest {
+    core::Tag tag;
+};
+
+/// 删除标签请求。
+struct RemoveTagRequest {
+    int64_t id = 0;
+};
+
+/// 列出全部标签请求（无负载）。
+struct ListTagsRequest {};
+
+/// 按 id 获取单条标签请求。
+struct GetTagRequest {
+    int64_t id = 0;
+};
+
+/// 按 name 查找标签请求。
+struct FindTagByNameRequest {
+    std::string name;
+};
+
+/// 获取指定条目的全部标签请求。
+struct GetEntryTagsRequest {
+    int64_t entry_id = 0;
+};
+
+/// 全量替换指定条目的标签关联请求。
+/// \note 重复项由实现去重；不存在的 tag_id 静默跳过。
+struct SetEntryTagsRequest {
+    int64_t entry_id = 0;
+    std::vector<int64_t> tag_ids;
+};
+
+// ---------------------------------------------------------------------------
 // 响应消息
 // ---------------------------------------------------------------------------
 
@@ -253,6 +297,46 @@ struct GetGeneratorSettingsResponse {
 struct SetGeneratorLimitResponse {
     bool success = false;
 };
+
+// ---------------------------------------------------------------------------
+// 标签（Tag）相关响应
+// ---------------------------------------------------------------------------
+
+/// 新增标签响应。tag.id 为 service 分配的主键。
+struct AddTagResponse {
+    core::Tag tag;
+};
+
+/// 更新标签响应。tag 为更新后的最新值。
+struct UpdateTagResponse {
+    core::Tag tag;
+};
+
+/// 删除标签响应（无负载）。
+struct RemoveTagResponse {};
+
+/// 列出全部标签响应。tags 已按 name 升序排列。
+struct ListTagsResponse {
+    std::vector<core::Tag> tags;
+};
+
+/// 获取单条标签响应。
+struct GetTagResponse {
+    core::Tag tag;
+};
+
+/// 按 name 查找标签响应。
+struct FindTagByNameResponse {
+    core::Tag tag;
+};
+
+/// 获取条目标签响应。
+struct GetEntryTagsResponse {
+    std::vector<core::Tag> tags;
+};
+
+/// 设置条目标签关联响应（无负载）。
+struct SetEntryTagsResponse {};
 
 // ---------------------------------------------------------------------------
 // 通用错误响应

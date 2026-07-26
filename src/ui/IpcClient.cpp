@@ -399,4 +399,63 @@ core::Result<protocol::SetGeneratorLimitResponse> IpcClient::set_generator_limit
         protocol::CommandId::SetGeneratorLimit, req);
 }
 
+// ---------------------------------------------------------------------------
+// 标签管理
+// ---------------------------------------------------------------------------
+
+core::Result<protocol::AddTagResponse> IpcClient::add_tag(const core::Tag& tag) {
+    protocol::AddTagRequest req;
+    req.tag = tag;
+    return send_request<protocol::AddTagRequest, protocol::AddTagResponse>(
+        protocol::CommandId::AddTag, req);
+}
+
+core::Result<protocol::UpdateTagResponse> IpcClient::update_tag(const core::Tag& tag) {
+    protocol::UpdateTagRequest req;
+    req.tag = tag;
+    return send_request<protocol::UpdateTagRequest, protocol::UpdateTagResponse>(
+        protocol::CommandId::UpdateTag, req);
+}
+
+core::Result<protocol::RemoveTagResponse> IpcClient::remove_tag(int64_t id) {
+    protocol::RemoveTagRequest req;
+    req.id = id;
+    return send_request<protocol::RemoveTagRequest, protocol::RemoveTagResponse>(
+        protocol::CommandId::RemoveTag, req);
+}
+
+core::Result<protocol::ListTagsResponse> IpcClient::list_tags() {
+    return send_request<protocol::ListTagsRequest, protocol::ListTagsResponse>(
+        protocol::CommandId::ListTags, protocol::ListTagsRequest{});
+}
+
+core::Result<protocol::GetTagResponse> IpcClient::get_tag(int64_t id) {
+    protocol::GetTagRequest req;
+    req.id = id;
+    return send_request<protocol::GetTagRequest, protocol::GetTagResponse>(
+        protocol::CommandId::GetTag, req);
+}
+
+core::Result<protocol::FindTagByNameResponse> IpcClient::find_tag_by_name(const std::string& name) {
+    protocol::FindTagByNameRequest req;
+    req.name = name;
+    return send_request<protocol::FindTagByNameRequest, protocol::FindTagByNameResponse>(
+        protocol::CommandId::FindTagByName, req);
+}
+
+core::Result<protocol::GetEntryTagsResponse> IpcClient::get_entry_tags(int64_t entry_id) {
+    protocol::GetEntryTagsRequest req;
+    req.entry_id = entry_id;
+    return send_request<protocol::GetEntryTagsRequest, protocol::GetEntryTagsResponse>(
+        protocol::CommandId::GetEntryTags, req);
+}
+
+core::Result<protocol::SetEntryTagsResponse> IpcClient::set_entry_tags(int64_t entry_id, const std::vector<int64_t>& tag_ids) {
+    protocol::SetEntryTagsRequest req;
+    req.entry_id = entry_id;
+    req.tag_ids = tag_ids;
+    return send_request<protocol::SetEntryTagsRequest, protocol::SetEntryTagsResponse>(
+        protocol::CommandId::SetEntryTags, req);
+}
+
 }  // namespace pwdvault::ui

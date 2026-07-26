@@ -30,6 +30,8 @@
 #include <QSize>
 #include <QString>
 
+class QPushButton;
+
 namespace pwdvault::ui {
 
 /// 图标语义角色：决定图标渲染颜色。
@@ -57,6 +59,12 @@ QIcon tinted_icon(const QString& svg_path, const QColor& color);
 
 /// 便捷：按角色着色 QIcon。
 QIcon tinted_icon(const QString& svg_path, IconRole role);
+
+/// 根据 current theme 给 primary 按钮设置内联样式。
+/// 浅色模式：黑色背景 + 白色文字；深色模式：蓝色背景 + 白色文字。
+/// 直接用 setStyleSheet 设置，不依赖 QSS dynamic property 选择器，
+/// 保证主题切换后立即生效。主题切换后需重新调用以刷新颜色。
+void apply_primary_button_style(QPushButton* btn);
 
 /// 将文本复制到剪贴板，并在 30 秒后自动清空。
 /// 用于密码等敏感数据，避免明文长期留存剪贴板被其他程序读取。

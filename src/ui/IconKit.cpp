@@ -9,6 +9,7 @@
 #include <QClipboard>
 #include <QIconEngine>
 #include <QPainter>
+#include <QPushButton>
 #include <QSvgRenderer>
 #include <QTimer>
 
@@ -126,6 +127,25 @@ QIcon tinted_icon(const QString& svg_path, const QColor& color) {
 
 QIcon tinted_icon(const QString& svg_path, IconRole role) {
     return tinted_icon(svg_path, icon_color(role));
+}
+
+void apply_primary_button_style(QPushButton* btn) {
+    if (!btn) return;
+    // 直接用内联样式，不依赖 QSS dynamic property 选择器。
+    // 浅色模式：黑色背景；深色模式：蓝色背景。两种模式文字均为白色。
+    const bool dark = Theme::is_dark();
+    const QString bg = dark ? QStringLiteral("#3b6bff") : QStringLiteral("#0f1626");
+    const QString hover = dark ? QStringLiteral("#5a82ff") : QStringLiteral("#2a3344");
+    const QString pressed = dark ? QStringLiteral("#2f5fff") : QStringLiteral("#000000");
+    const QString disabled_bg = dark ? QStringLiteral("#3a4866") : QStringLiteral("#d6e0ff");
+    const QString disabled_fg = dark ? QStringLiteral("#5c6678") : QStringLiteral("#6f7d99");
+    btn->setStyleSheet(QStringLiteral(
+        "QPushButton { background-color: %1; color: #ffffff; border: none; "
+        "border-radius: 6px; padding: 0 18px; font-weight: 500; }"
+        "QPushButton:hover { background-color: %2; }"
+        "QPushButton:pressed { background-color: %3; }"
+        "QPushButton:disabled { background-color: %4; color: %5; }"
+    ).arg(bg, hover, pressed, disabled_bg, disabled_fg));
 }
 
 void copy_secure_to_clipboard(const QString& text) {

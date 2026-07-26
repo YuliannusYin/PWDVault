@@ -27,6 +27,8 @@ pwdvault::core::PasswordEntry make_entry(const std::string& website,
                                          const std::string& username,
                                          const std::string& note = "") {
     pwdvault::core::PasswordEntry e;
+    e.entry_name = website;  // 用 website 作为显示标题
+    e.account = username;     // 用 username 作为登录账号
     e.website = website;
     e.username = username;
     e.password = "cipher-blob-bytes";  // 模拟已加密的密文（实际由 ICryptoEngine 产出）

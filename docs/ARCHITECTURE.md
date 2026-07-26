@@ -131,8 +131,10 @@ CMake 目标命名约定：`pwdvault-<module>`（小写连字符），别名 `Pw
 以 UI 调用 `add_entry` 为例，完整的字节级数据流：
 
 ```
-1. UI 视图层（PasswordBookView）
-   构造 core::PasswordEntry{website, username, password, note}
+1. UI 视图层（InputView / EditEntryDialog）
+   构造 core::PasswordEntry{
+     entry_name, account, username, password, website, note, tags
+   }
         │
         ▼
 2. UI IpcClient::add_entry(entry)
@@ -153,13 +155,15 @@ CMake 目标命名约定：`pwdvault-<module>`（小写连字符），别名 `Pw
    switch (header.command) {
      case CommandId::AddEntry:
        deserialize<AddEntryRequest>(payload)
+       → resolve_entry_tags(entry)         // 自动创建 id=0 的新标签并回写关联
        → encrypt_entry(entry)
          // 加密模式：用 entry_crypto_ 加密 password 字段
          //   → AES-256-GCM encrypt → [IV(12) || ciphertext || tag(16)]
          //   → 拆分 iv / password(密文) / tag
          // 明文模式：password 保持明文，iv / tag 留空
        → storage_->add_entry(encrypted_entry)
-         → SQLite INSERT INTO entries(...)
+         → SQLite INSERT INTO passwords(...)
+         → set_entry_tags_unlocked(entry.id, tag_ids)  // 写入 entry_tags 关联
        → 构造 AddEntryResponse{明文 entry + 分配的 id + 时间戳}
        → protocol::serialize(AddEntryResponse) → ByteVec response_payload
    }
@@ -225,7 +229,7 @@ PwdVault 支持两种工作模式：
                                  ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ 加密后的 entry.password                                     │
-│   - 持久化于 vault.db 的 entries 表                          │
+│   - 持久化于 vault.db 的 passwords 表                        │
 │   - iv / password(密文) / tag 三段分别存于不同列             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -268,19 +272,39 @@ PwdVault 支持两种工作模式：
 
 ### 生成记录与设置存储
 
-除 `entries` 表外，`vault.db` 还包含两张辅助表：
+除 `passwords` 表外，`vault.db` 还包含四张辅助表：
 
-- **`generated_passwords`**：保存密码生成器历史记录。字段与 `entries` 同构
+- **`generated_passwords`**：保存密码生成器历史记录。字段与 `passwords` 同构
   （id / password BLOB / length / iv / tag / created_at）。`generate_password`
   成功后 service 自动追加一条记录；通过 `set_generator_limit` 配置上限后
   立即按 `created_at DESC, id DESC` 保留最新 N 条，其余删除（`limit=0` 表示无限制）。
+- **`tags`**：标签字典表（id / name UNIQUE / color / created_at / updated_at）。
+  `name` 在全库范围内唯一（大小写敏感）；`color` 为可选的 `#RRGGBB` 颜色。
+- **`entry_tags`**：条目与标签多对多关联表（entry_id / tag_id，外键 `ON DELETE CASCADE`）。
+  删除 Entry 或 Tag 时自动清理关联；`set_entry_tags` 为全量替换语义。
 - **`settings`**：通用 KV 配置表（key TEXT PRIMARY KEY, value TEXT）。当前用于
-  持久化生成器历史记录上限（key=`generator.limit`），未来可扩展承载其他用户偏好。
+  持久化生成器历史记录上限（key=`generator.limit`）与 schema 版本号
+  （key=`schema_version`，当前值为 `2`），未来可扩展承载其他用户偏好。
+
+#### Schema 版本管理
+
+`StorageEngine::init_schema` 启动时读取 `settings.schema_version`：
+- 不存在或值不为 `2` → 删除旧 `passwords` 表，按新 schema 重建（含 `entry_name` /
+  `account` / `username` / `tags` 等新字段），并新建 `tags` / `entry_tags` 表，
+  写入 `schema_version='2'`。
+- 值为 `2` → 跳过重建，直接复用现有 schema。
+
+> **不向后兼容**：schema 升级会清空旧 `passwords` 表数据。3.2.0 起移除了
+> 旧 Python 版（Fernet）数据迁移工具，需要从旧版迁移数据的用户请使用 3.1.x 版本
+> 完成迁移后再升级到 3.2.0+。
 
 加密约定：生成记录的 password 字段在加密模式下用 `entry_crypto_` 加密为
 `[IV(12) || ciphertext || tag(16)]`，与 `entry.password` 同构；明文模式下
 iv / tag 为空、password 为明文 BLOB。详见
 [IPC_PROTOCOL.md 第 3.4 节](IPC_PROTOCOL.md#34-密码生成与强度评估0x03xx)。
+
+标签数据本身**不加密**（`tags` / `entry_tags` 表为明文存储），仅 `passwords.password`
+与 `generated_passwords.password` 字段受 AES-256-GCM 保护。
 
 ## 6. 安全设计
 
@@ -303,7 +327,7 @@ iv / tag 为空、password 为明文 BLOB。详见
 
 1. **Commands.h**：在 `CommandId` 枚举中追加新值（保持值唯一且不复用旧值）：
    ```cpp
-   Backup = 0x0400,  // 新命令分组 0x04xx
+   Backup = 0x0500,  // 新命令分组 0x05xx（0x04xx 已被 Tag 命令占用）
    ```
 2. **Messages.h**：定义请求 / 响应结构：
    ```cpp

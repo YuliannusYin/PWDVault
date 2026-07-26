@@ -86,7 +86,7 @@ public:
     // -----------------------------------------------------------------------
     // 通用 KV 设置存储
     // -----------------------------------------------------------------------
-    // 用于持久化少量应用级设置（如生成器历史记录上限）。
+    // 用于持久化少量应用级设置（如生成器历史记录上限、schema 版本号）。
     // key/value 均为字符串，由调用方负责类型转换。
 
     /// 读取设置项；不存在时返回空字符串（不视为错误）。
@@ -94,6 +94,43 @@ public:
 
     /// 写入或更新设置项；value 为空字符串等价于删除该 key。
     virtual Error set_setting(const std::string& key, const std::string& value) = 0;
+
+    // -----------------------------------------------------------------------
+    // 标签（Tag）管理
+    // -----------------------------------------------------------------------
+    // 标签独立存储，通过 entry_tags 关联表与 passwords 多对多关联。
+    // 实现须保证：
+    //   - `tag.name` 全库唯一
+    //   - 删除条目时自动级联清理关联（CASCADE）
+    //   - 删除标签时自动级联清理关联（CASCADE）
+
+    /// 新增标签。`tag.id` 通常为 0（由实现分配）。
+    /// \return 成功时返回带分配 id 与时间戳的标签；name 冲突时返回 AlreadyExists
+    virtual Result<Tag> add_tag(const Tag& tag) = 0;
+
+    /// 更新已存在标签的 name/color。`tag.id` 必须非 0；created_at 不变。
+    virtual Result<Tag> update_tag(const Tag& tag) = 0;
+
+    /// 按 id 删除标签，并级联清理 entry_tags 关联。
+    virtual Error remove_tag(int64_t id) = 0;
+
+    /// 列出全部标签（按 name 升序）。
+    virtual Result<std::vector<Tag>> list_tags() = 0;
+
+    /// 按 id 获取单个标签。
+    virtual Result<Tag> get_tag(int64_t id) = 0;
+
+    /// 按 name 查找标签；不存在返回 NotFound。
+    virtual Result<Tag> find_tag_by_name(const std::string& name) = 0;
+
+    /// 获取指定条目关联的所有标签。
+    virtual Result<std::vector<Tag>> get_entry_tags(int64_t entry_id) = 0;
+
+    /// 全量替换指定条目的标签关联。
+    /// \param entry_id 条目 id
+    /// \param tag_ids 标签 id 列表（重复项由实现去重；不存在的 id 静默跳过）
+    virtual Error set_entry_tags(int64_t entry_id,
+                                  const std::vector<int64_t>& tag_ids) = 0;
 };
 
 }  // namespace pwdvault::core

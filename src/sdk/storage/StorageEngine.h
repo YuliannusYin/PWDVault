@@ -12,20 +12,42 @@
 //   - PasswordEntry 中的 password / iv / tag 字段视为已加密的二进制数据，
 //     本引擎只负责 BLOB 存取，不做任何加解密。
 //
-// Schema（init 时创建）：
+// Schema（init 时创建，schema_version=2，会清空重建旧表）：
 //   CREATE TABLE IF NOT EXISTS passwords (
-//       id INTEGER PRIMARY KEY AUTOINCREMENT,
-//       website TEXT NOT NULL,
-//       username TEXT NOT NULL,
-//       password BLOB NOT NULL,
-//       note TEXT,
-//       iv BLOB NOT NULL,
-//       tag BLOB NOT NULL,
-//       created_at INTEGER NOT NULL,
-//       updated_at INTEGER NOT NULL
+//       id          INTEGER PRIMARY KEY AUTOINCREMENT,
+//       entry_name  TEXT NOT NULL,
+//       account     TEXT NOT NULL,
+//       username    TEXT,
+//       password    BLOB NOT NULL,
+//       website     TEXT,
+//       note        TEXT,
+//       iv          BLOB NOT NULL,
+//       tag         BLOB NOT NULL,
+//       created_at  INTEGER NOT NULL,
+//       updated_at  INTEGER NOT NULL
 //   );
-//   CREATE INDEX IF NOT EXISTS idx_passwords_website  ON passwords(website);
-//   CREATE INDEX IF NOT EXISTS idx_passwords_username ON passwords(username);
+//   CREATE INDEX IF NOT EXISTS idx_passwords_entry_name ON passwords(entry_name);
+//   CREATE INDEX IF NOT EXISTS idx_passwords_account    ON passwords(account);
+//
+//   CREATE TABLE IF NOT EXISTS tags (
+//       id          INTEGER PRIMARY KEY AUTOINCREMENT,
+//       name        TEXT NOT NULL UNIQUE,
+//       color       TEXT,
+//       created_at  INTEGER NOT NULL,
+//       updated_at  INTEGER NOT NULL
+//   );
+//   CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
+//
+//   CREATE TABLE IF NOT EXISTS entry_tags (
+//       entry_id    INTEGER NOT NULL,
+//       tag_id      INTEGER NOT NULL,
+//       PRIMARY KEY (entry_id, tag_id),
+//       FOREIGN KEY (entry_id) REFERENCES passwords(id) ON DELETE CASCADE,
+//       FOREIGN KEY (tag_id)   REFERENCES tags(id)       ON DELETE CASCADE
+//   );
+//   CREATE INDEX IF NOT EXISTS idx_entry_tags_tag ON entry_tags(tag_id);
+//
+//   settings 表中写入 schema_version='2'。
 // =============================================================================
 #pragma once
 
@@ -78,6 +100,17 @@ public:
     core::Result<std::string> get_setting(const std::string& key) override;
     core::Error set_setting(const std::string& key, const std::string& value) override;
 
+    // Tag 与 entry-tag 关联
+    core::Result<core::Tag> add_tag(const core::Tag& tag) override;
+    core::Result<core::Tag> update_tag(const core::Tag& tag) override;
+    core::Error remove_tag(int64_t id) override;
+    core::Result<std::vector<core::Tag>> list_tags() override;
+    core::Result<core::Tag> get_tag(int64_t id) override;
+    core::Result<core::Tag> find_tag_by_name(const std::string& name) override;
+    core::Result<std::vector<core::Tag>> get_entry_tags(int64_t entry_id) override;
+    core::Error set_entry_tags(int64_t entry_id,
+                                const std::vector<int64_t>& tag_ids) override;
+
 private:
     /// 自定义 deleter：封装 sqlite3_close_v2。
     struct SqliteDbDeleter {
@@ -97,12 +130,15 @@ private:
     /// 执行一条无参数 SQL（如 BEGIN/COMMIT/CREATE TABLE）。
     core::Error exec_sql(const char* sql);
 
-    /// 初始化 schema（建表 + 建索引），由构造函数调用。
+    /// 初始化 schema（建表 + 建索引 + 写入 schema_version）。
     core::Error init_schema();
 
-    /// 从当前 step 后的结果行读取一条 PasswordEntry。
+    /// 从当前 step 后的结果行读取一条 PasswordEntry（不含 tags）。
     /// 调用方需保证 stmt 已 step 到 SQLITE_ROW。
     static core::PasswordEntry read_row(sqlite3_stmt* stmt);
+
+    /// 从当前 step 后的结果行读取一条 Tag。
+    static core::Tag read_tag_row(sqlite3_stmt* stmt);
 
     /// 从当前 step 后的结果行读取一条 GeneratedPasswordRecord。
     static core::GeneratedPasswordRecord read_generated_row(sqlite3_stmt* stmt);
@@ -112,6 +148,16 @@ private:
 
     /// 当前 Unix 时间戳（秒）。
     static int64_t now_seconds();
+
+    /// 读取指定 entry_id 的所有关联标签（不加锁，由调用方持锁）。
+    std::vector<core::Tag> read_entry_tags_unlocked(int64_t entry_id);
+
+    /// 全量替换 entry_id 的标签关联（不加锁，由调用方持锁）。
+    core::Error set_entry_tags_unlocked(int64_t entry_id,
+                                         const std::vector<int64_t>& tag_ids);
+
+    /// 为单条 PasswordEntry 填充 tags 字段（不加锁）。
+    void fill_entry_tags_unlocked(core::PasswordEntry& entry);
 };
 
 }  // namespace pwdvault::storage

@@ -23,20 +23,47 @@ using ByteVec = std::vector<std::byte>;
 /// 只读字节视图（不持有所有权），用于函数参数传递以避免拷贝。
 using ByteSpan = std::span<const std::byte>;
 
+/// 标签（可被多条 PasswordEntry 共享）。
+///
+/// `name` 在全库范围内唯一；`color` 为十六进制颜色（如 "#AABBCC"），可空表示使用默认色。
+/// `id == 0` 表示尚未入库的新标签。
+struct Tag {
+    int64_t id = 0;          ///< 主键，0 表示尚未分配的新标签
+    std::string name;        ///< 唯一名称（不可重复，大小写敏感）
+    std::string color;       ///< 十六进制颜色 "#RRGGBB"，可空
+    int64_t created_at = 0;  ///< 创建时间（Unix 时间戳，秒）
+    int64_t updated_at = 0;  ///< 最后更新时间（Unix 时间戳，秒）
+
+    /// 是否为新标签（尚未分配 id）。
+    bool is_new() const { return id == 0; }
+};
+
 /// 密码条目。
 ///
-/// 内存中的 `password` 字段为明文；持久化时由 ICryptoEngine 加密，
-/// 同时填充 `iv` 与 `tag`。`id == 0` 表示尚未入库的新条目。
+/// 字段语义（与 UI 表头一致）：
+///   - `entry_name`（必填）：条目显示标题，如 "GitHub 个人账号"
+///   - `account`（必填）：登录 ID，如 "alice@gmail.com"
+///   - `username`（可选）：显示名，如 "张三"
+///   - `password`（必填）：明文密码，仅在内存中存在
+///   - `website`（可选）：站点 URL，如 "https://github.com"
+///   - `note`（可选）：备注，支持 markdown 语法
+///   - `tags`：关联的标签列表（多对多）
+///
+/// 持久化时由 ICryptoEngine 加密 `password`，同时填充 `iv` 与 `tag`。
+/// `id == 0` 表示尚未入库的新条目。
 struct PasswordEntry {
     int64_t id = 0;          ///< 条目主键，0 表示尚未分配的新条目
-    std::string website;      ///< 站点/服务名（如 "github.com"）
-    std::string username;     ///< 用户名或登录账号
-    std::string password;     ///< 明文密码，仅在内存中存在
-    std::string note;         ///< 备注（可空）
-    int64_t created_at = 0;   ///< 创建时间（Unix 时间戳，秒）
-    int64_t updated_at = 0;   ///< 最后更新时间（Unix 时间戳，秒）
-    ByteVec iv;               ///< AES-256-GCM 的 IV，固定 12 字节
-    ByteVec tag;              ///< AES-256-GCM 的认证 tag，固定 16 字节
+    std::string entry_name;  ///< *必填* 条目显示标题
+    std::string account;     ///< *必填* 登录账号（用户 ID）
+    std::string username;    ///< 可选 显示名
+    std::string password;    ///< *必填* 明文密码，仅在内存中存在
+    std::string website;     ///< 可选 站点 URL
+    std::string note;        ///< 可选 备注（markdown 源码）
+    std::vector<Tag> tags;   ///< 关联标签列表
+    int64_t created_at = 0;  ///< 创建时间（Unix 时间戳，秒）
+    int64_t updated_at = 0;  ///< 最后更新时间（Unix 时间戳，秒）
+    ByteVec iv;              ///< AES-256-GCM 的 IV，固定 12 字节
+    ByteVec tag;             ///< AES-256-GCM 的认证 tag，固定 16 字节
 
     /// 是否为新条目（尚未分配 id）。
     bool is_new() const { return id == 0; }
@@ -46,9 +73,11 @@ struct PasswordEntry {
 struct SearchQuery {
     std::string text;                          ///< 搜索文本（子串匹配）
     std::vector<std::string> fields;           ///< 限定搜索字段
-                                               ///< （website/username/password/note，
-                                               ///<  空表示搜索全部字段）
+                                               ///< （entry_name/account/username/website/note，
+                                               ///<  空表示搜索全部可搜索字段）
     bool case_sensitive = false;               ///< 是否区分大小写
+    std::vector<int64_t> tag_ids;              ///< 按标签过滤（OR 语义：包含任一即匹配）
+                                               ///< 为空时不按标签过滤
 };
 
 /// 密码生成器选项。

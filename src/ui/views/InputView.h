@@ -4,11 +4,11 @@
 //
 // PwdVault 录入视图（新设计）。640px 居中卡片：
 //   - 标题「新增密码条目」+ 副标题「所有字段加密存储于本地」
-//   - 表单：网站（globe 图标）/ 用户名（at-sign 图标）/ 密码（key 图标 + 生成 + 可见性）
-//     + 4 段强度条
-//   - 备注（textarea）
+//   - 表单：*条目名 / *账号 / 用户名 / *密码（key 图标 + 生成 + 可见性）
+//     + 4 段强度条 / 网站 / 标签（芯片流式输入）/ 备注（markdown 源码）
 //   - 底部：清除 + 保存按钮
 //
+// 带 * 号为必填：entry_name / account / password。
 // 保存成功后 emit entry_added(id)，清空表单并弹提示。
 // 「生成」按钮 emit password_generator_requested，由 MainWindow 切换到生成器视图。
 // =============================================================================
@@ -26,6 +26,7 @@ class QTimer;
 namespace pwdvault::ui {
 
 class IpcClient;
+class TagInputWidget;
 
 class InputView : public QWidget {
     Q_OBJECT
@@ -57,13 +58,18 @@ private:
     void build_ui();
     void update_strength(const QString& password);
     void set_error(const QString& message);
+    /// 从 service 加载全部已知标签，刷新 TagInputWidget 的补全列表。
+    void refresh_existing_tags();
 
     IpcClient* client_;
 
-    QLineEdit* website_edit_ = nullptr;
-    QLineEdit* username_edit_ = nullptr;
-    QLineEdit* password_edit_ = nullptr;
-    QPlainTextEdit* note_edit_ = nullptr;
+    QLineEdit* entry_name_edit_ = nullptr;  ///< *必填* 条目显示标题
+    QLineEdit* account_edit_ = nullptr;      ///< *必填* 登录账号
+    QLineEdit* username_edit_ = nullptr;     ///< 可选 显示名
+    QLineEdit* password_edit_ = nullptr;     ///< *必填* 明文密码
+    QLineEdit* website_edit_ = nullptr;     ///< 可选 站点 URL
+    TagInputWidget* tag_input_ = nullptr;    ///< 标签芯片输入
+    QPlainTextEdit* note_edit_ = nullptr;     ///< 备注（markdown 源码）
     QPushButton* generate_button_ = nullptr;
     QPushButton* visibility_btn_ = nullptr;
     QProgressBar* strength_bar_ = nullptr;

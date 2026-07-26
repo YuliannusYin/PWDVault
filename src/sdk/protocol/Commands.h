@@ -11,6 +11,7 @@
 //   0x01xx  会话级（解锁、锁定、程序密码管理、vault 状态查询）
 //   0x02xx  条目 CRUD
 //   0x03xx  密码生成与强度评估
+//   0x04xx  标签（Tag）管理与条目-标签关联
 // =============================================================================
 #pragma once
 
@@ -45,6 +46,15 @@ enum class CommandId : uint16_t {
     ClearGeneratedRecords = 0x0304,  ///< 清空全部生成记录
     GetGeneratorSettings  = 0x0305,  ///< 查询生成器设置（历史记录上限）
     SetGeneratorLimit     = 0x0306,  ///< 设置历史记录上限（0=无限制）
+
+    AddTag           = 0x0400,  ///< 新增标签
+    UpdateTag        = 0x0401,  ///< 更新已存在标签
+    RemoveTag        = 0x0402,  ///< 按 id 删除标签
+    ListTags         = 0x0403,  ///< 列出全部标签
+    GetTag           = 0x0404,  ///< 按 id 获取单条标签
+    FindTagByName    = 0x0405,  ///< 按 name 查找标签
+    GetEntryTags     = 0x0406,  ///< 获取指定条目的全部标签
+    SetEntryTags     = 0x0407,  ///< 全量替换指定条目的标签关联
 };
 
 /// 返回命令的可读名称，便于日志输出与调试。

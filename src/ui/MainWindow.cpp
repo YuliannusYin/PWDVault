@@ -22,6 +22,7 @@
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QStackedWidget>
@@ -187,7 +188,19 @@ MainWindow::MainWindow(IpcClient* client, QWidget* parent)
     // 启用 Windows 11 原生窗口圆角（Win10 自动退化为直角）。
     // 必须在窗口创建后调用，所以放在构造函数末尾。
     enable_win11_rounded_corners(reinterpret_cast<HWND>(winId()));
+
+    // 为无边框窗口补回 WS_MINIMIZEBOX 样式，使任务栏按钮支持「点击切换
+    // 最小化/还原」的 Windows 默认行为。Qt::FramelessWindowHint 会移除所有
+    // WS_* 样式（包括 WS_MINIMIZEBOX），导致任务栏按钮点击只能激活窗口
+    // 而无法触发系统默认的「再点一次还原/最小化」切换。
+    // 参考：Win32 SDK 文档「Window Styles」与「WM_NCHITTEST」说明。
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+    LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+    SetWindowLongPtr(hwnd, GWL_STYLE, style | WS_MINIMIZEBOX);
 #endif
+
+    // 构建系统托盘（关闭按钮 → 最小化到托盘；托盘单击切换显隐）
+    build_tray_icon();
 
     update_connection_status();
     // 初始着色所有图标（导航 + 顶栏），需在按钮创建后调用
@@ -206,7 +219,15 @@ MainWindow::MainWindow(IpcClient* client, QWidget* parent)
 MainWindow::~MainWindow() = default;
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    // 关闭时若有解锁视图，一起清理
+    // X 按钮 / Alt+F4 / 系统菜单「关闭」均走这里。
+    // 用户选择：关闭 → 最小化到托盘，而非退出。
+    // 真正退出仅通过托盘菜单「退出」触发（QApplication::quit）。
+    if (tray_icon_ && tray_icon_->isVisible()) {
+        event->ignore();
+        hide();
+        return;
+    }
+    // 托盘不可用时（如系统不支持），走原有清理路径真正退出
     if (unlock_view_) {
         unlock_view_->deleteLater();
         unlock_view_ = nullptr;
@@ -293,7 +314,84 @@ void MainWindow::on_minimize_clicked() {
 }
 
 void MainWindow::on_close_clicked() {
-    close();
+    close();  // 走 closeEvent，由其决定「隐藏到托盘」或「真正退出」
+}
+
+// ---------------------------------------------------------------------------
+// 系统托盘
+// ---------------------------------------------------------------------------
+
+void MainWindow::build_tray_icon() {
+    // 仅当系统支持托盘时创建
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+        return;
+    }
+
+    tray_icon_ = new QSystemTrayIcon(this);
+    tray_icon_->setIcon(QIcon(QStringLiteral(":/logo.png")));
+    tray_icon_->setToolTip(QStringLiteral("PwdVault - 密码管理器"));
+
+    // 右键菜单
+    tray_menu_ = new QMenu(this);
+    tray_menu_->addAction(QStringLiteral("显示/隐藏主窗口"),
+                          this, &MainWindow::on_tray_toggle_visible);
+    tray_menu_->addSeparator();
+    tray_menu_->addAction(QStringLiteral("锁定保险库"),
+                          this, &MainWindow::on_tray_lock);
+    tray_menu_->addSeparator();
+    tray_menu_->addAction(QStringLiteral("退出"),
+                          this, &MainWindow::on_tray_quit);
+    tray_icon_->setContextMenu(tray_menu_);
+
+    // 单击切换显隐
+    connect(tray_icon_, &QSystemTrayIcon::activated,
+            this, &MainWindow::on_tray_activated);
+
+    tray_icon_->show();
+}
+
+void MainWindow::show_and_activate() {
+    if (isMinimized()) {
+        showNormal();
+    } else {
+        show();
+    }
+    raise();
+    activateWindow();
+}
+
+void MainWindow::on_tray_activated(QSystemTrayIcon::ActivationReason reason) {
+    // 单击（Trigger）切换显隐；双击 / Context / MiddleClick 等忽略
+    // （Context 由系统自动弹出右键菜单）
+    if (reason == QSystemTrayIcon::Trigger) {
+        on_tray_toggle_visible();
+    }
+}
+
+void MainWindow::on_tray_toggle_visible() {
+    if (isVisible() && !isMinimized()) {
+        hide();
+    } else {
+        show_and_activate();
+    }
+}
+
+void MainWindow::on_tray_lock() {
+    // 锁定前必须显示主窗口，否则解锁模态对话框无可见父窗口
+    show_and_activate();
+    on_lock_clicked();
+}
+
+void MainWindow::on_tray_quit() {
+    // 真正退出：清理托盘图标后退出事件循环
+    if (tray_icon_) {
+        tray_icon_->hide();
+    }
+    if (unlock_view_) {
+        unlock_view_->deleteLater();
+        unlock_view_ = nullptr;
+    }
+    QApplication::quit();
 }
 
 // ---------------------------------------------------------------------------
@@ -441,14 +539,6 @@ void MainWindow::build_topbar(QWidget* parent) {
         QStringLiteral("锁定保险库"), topbar_frame_);
     topbar_layout->addWidget(topbar_lock_btn_);
 
-    topbar_add_btn_ = new QPushButton(topbar_frame_);
-    topbar_add_btn_->setIconSize(QSize(16, 16));
-    topbar_add_btn_->setText(QStringLiteral("新增"));
-    topbar_add_btn_->setCursor(Qt::PointingHandCursor);
-    topbar_add_btn_->setFixedHeight(40);
-    topbar_add_btn_->setProperty("cssClass", QStringLiteral("primary"));
-    topbar_layout->addWidget(topbar_add_btn_);
-
     // ── 窗口控制按钮（贴右边缘） ──
     // 与功能按钮之间留 4px 间隔
     topbar_layout->addSpacing(4);
@@ -469,8 +559,6 @@ void MainWindow::build_topbar(QWidget* parent) {
             this, &MainWindow::on_theme_toggle);
     connect(topbar_lock_btn_, &QPushButton::clicked,
             this, &MainWindow::on_lock_clicked);
-    connect(topbar_add_btn_, &QPushButton::clicked,
-            this, &MainWindow::on_add_entry_clicked);
     connect(minimize_btn_, &QPushButton::clicked,
             this, &MainWindow::on_minimize_clicked);
     connect(close_btn_, &QPushButton::clicked,
@@ -483,25 +571,21 @@ void MainWindow::update_topbar_for_view(int row) {
             topbar_title_->setText(QStringLiteral("密码本"));
             topbar_subtitle_->setText(QString());
             topbar_count_badge_->show();
-            topbar_add_btn_->show();
             break;
         case kSidebarInput:
             topbar_title_->setText(QStringLiteral("录入"));
             topbar_subtitle_->setText(QStringLiteral("新建一条密码记录"));
             topbar_count_badge_->hide();
-            topbar_add_btn_->hide();
             break;
         case kSidebarGenerator:
             topbar_title_->setText(QStringLiteral("生成器"));
             topbar_subtitle_->setText(QStringLiteral("生成高强度随机密码"));
             topbar_count_badge_->hide();
-            topbar_add_btn_->hide();
             break;
         case kSidebarSettings:
             topbar_title_->setText(QStringLiteral("设置"));
-            topbar_subtitle_->setText(QStringLiteral("版本 3.1.0"));
+            topbar_subtitle_->setText(QStringLiteral("版本 3.2.0"));
             topbar_count_badge_->hide();
-            topbar_add_btn_->hide();
             break;
         default:
             break;
@@ -579,9 +663,6 @@ void MainWindow::refresh_topbar_icons() {
         close_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/x.svg"), IconRole::Normal));
     if (sidebar_lock_btn_)
         sidebar_lock_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/lock.svg"), IconRole::Normal));
-    // 新增按钮：primary 背景上用白色图标
-    if (topbar_add_btn_)
-        topbar_add_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/plus.svg"), IconRole::OnPrimary));
 }
 
 // ---------------------------------------------------------------------------
@@ -717,11 +798,6 @@ void MainWindow::on_lock_clicked() {
             msg.isEmpty() ? QStringLiteral("锁定密码库失败。")
                           : QStringLiteral("锁定失败：%1").arg(msg));
     }
-}
-
-void MainWindow::on_add_entry_clicked() {
-    switch_to_view(kSidebarInput);
-    if (input_view_) input_view_->focus_first_field();
 }
 
 void MainWindow::on_ipc_disconnected() {

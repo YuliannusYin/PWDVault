@@ -83,7 +83,6 @@
 | `protocol` | `src/sdk/protocol/`                 |
 | `service`  | `src/service/`                      |
 | `ui`       | `src/ui/`                           |
-| `migrate`  | `src/migrate/`                      |
 | `build`    | CMake、vcpkg、打包脚本              |
 | `docs`     | `docs/`、README、AGENTS             |
 | `test`     | `tests/`                            |
@@ -187,7 +186,7 @@ ServiceCore 中 add_entry/update_entry 的加密逻辑重复，
 - **MINOR**：向后兼容的功能新增
 - **PATCH**：向后兼容的 Bug 修复
 
-当前版本：`3.1.0`（详见 [Releases](https://github.com/YuliannusYin/PWDVault/releases)）
+当前版本：`3.2.0`（详见 [Releases](https://github.com/YuliannusYin/PWDVault/releases)）
 
 ### 4.2 版本号位置
 
@@ -213,14 +212,14 @@ ServiceCore 中 add_entry/update_entry 的加密逻辑重复，
 3. 更新 `docs/CHANGELOG.md`（若存在）或 Release Notes
 4. 提交版本号变更：
    ```powershell
-   git commit -m "chore: bump version to 3.1.0"
+   git commit -m "chore: bump version to 3.2.0"
    ```
 
 ### 5.2 打 tag
 
 ```powershell
-git tag -a v3.1.0 -m "Release v3.1.0"
-git push origin v3.1.0
+git tag -a v3.2.0 -m "Release v3.2.0"
+git push origin v3.2.0
 ```
 
 ### 5.3 构建安装包
@@ -245,15 +244,15 @@ cmake --install build --config Release --prefix build/install
 cmake --build build --target package_inno
 ```
 
-输出：`build/package/pwdvault-3.1.0-setup.exe`
+输出：`build/package/pwdvault-3.2.0-setup.exe`
 
 ### 5.4 发布到 GitHub Releases
 
 1. 在 GitHub 仓库页面点击「Releases」→「Draft a new release」
-2. 选择刚推送的 tag（如 `v3.1.0`）
-3. 填写 Release Title（如 `PwdVault 3.1.0`）
+2. 选择刚推送的 tag（如 `v3.2.0`）
+3. 填写 Release Title（如 `PwdVault 3.2.0`）
 4. 在描述中粘贴 Release Notes
-5. 上传 `pwdvault-3.1.0-setup.exe` 与 `pwdvault-3.1.0-portable.zip`（便携版）
+5. 上传 `pwdvault-3.2.0-setup.exe` 与 `pwdvault-3.2.0-portable.zip`（便携版）
 6. 点击「Publish release」
 
 ### 5.5 发布后
@@ -304,5 +303,4 @@ cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems
 - [ARCHITECTURE.md](ARCHITECTURE.md)：架构设计与模块分层
 - [IPC_PROTOCOL.md](IPC_PROTOCOL.md)：IPC 协议帧格式与命令列表
 - [SECURITY.md](SECURITY.md)：威胁模型与加密方案
-- [MIGRATION.md](MIGRATION.md)：旧数据迁移指南
 - [README.md](../README.md)：终端用户文档

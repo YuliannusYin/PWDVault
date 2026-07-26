@@ -81,8 +81,26 @@ private:
     core::ByteVec handle_get_generator_settings();
     core::ByteVec handle_set_generator_limit(core::ByteSpan payload);
 
+    // Tag 与 entry-tag 关联
+    core::ByteVec handle_add_tag(core::ByteSpan payload);
+    core::ByteVec handle_update_tag(core::ByteSpan payload);
+    core::ByteVec handle_remove_tag(core::ByteSpan payload);
+    core::ByteVec handle_list_tags();
+    core::ByteVec handle_get_tag(core::ByteSpan payload);
+    core::ByteVec handle_find_tag_by_name(core::ByteSpan payload);
+    core::ByteVec handle_get_entry_tags(core::ByteSpan payload);
+    core::ByteVec handle_set_entry_tags(core::ByteSpan payload);
+
     /// 构造 ErrorResponse 的序列化字节。
     core::ByteVec make_error(core::ErrorCode code, std::string message) const;
+
+    /// 解析 entry.tags 中 id==0 的"新标签"：
+    ///   - 若 name 已存在 → 用既有 Tag 替换
+    ///   - 若 name 不存在 → 调用 add_tag 入库后替换
+    /// 已带有效 id 的标签保持不变。调用方需持锁。
+    /// \return 成功时返回解析后的 tags（全部带有效 id）；失败返回 Error
+    core::Result<std::vector<core::Tag>> resolve_entry_tags(
+        const std::vector<core::Tag>& tags);
 
     /// 加密 entry.password，填充 iv/tag 字段。
     /// 明文模式（password_enabled_==false）下直接返回 entry 不做加密。

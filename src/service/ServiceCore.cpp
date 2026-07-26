@@ -316,6 +316,14 @@ core::ByteVec ServiceCore::handle_request(core::ByteSpan payload,
         case CommandId::ClearGeneratedRecords:   return handle_clear_generated_records();
         case CommandId::GetGeneratorSettings:    return handle_get_generator_settings();
         case CommandId::SetGeneratorLimit:        return handle_set_generator_limit(payload);
+        case CommandId::AddTag:                   return handle_add_tag(payload);
+        case CommandId::UpdateTag:               return handle_update_tag(payload);
+        case CommandId::RemoveTag:               return handle_remove_tag(payload);
+        case CommandId::ListTags:                return handle_list_tags();
+        case CommandId::GetTag:                  return handle_get_tag(payload);
+        case CommandId::FindTagByName:           return handle_find_tag_by_name(payload);
+        case CommandId::GetEntryTags:            return handle_get_entry_tags(payload);
+        case CommandId::SetEntryTags:            return handle_set_entry_tags(payload);
         case CommandId::Shutdown:
             // Shutdown 由 main.cpp 的 handler lambda 拦截处理，不应到达此处
             return protocol::serialize(protocol::ShutdownResponse{});
@@ -647,11 +655,27 @@ core::ByteVec ServiceCore::handle_add_entry(core::ByteSpan payload) {
                               req_result.error().what());
     }
 
+    // 必填字段校验：entry_name / account / password
+    if (req_result->entry.entry_name.empty() ||
+        req_result->entry.account.empty() ||
+        req_result->entry.password.empty()) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          "entry_name / account / password must not be empty");
+    }
+
     // 保存明文副本用于响应
     core::PasswordEntry plain_entry = req_result->entry;
 
-    // 加密 password 字段（明文模式下为 no-op）
-    auto enc_result = encrypt_entry(req_result->entry);
+    // 解析 entry.tags：将 id==0 的新标签按 name 解析为有效 id
+    auto resolved_tags = resolve_entry_tags(req_result->entry.tags);
+    if (!resolved_tags) {
+        return make_error(resolved_tags.error().code, resolved_tags.error().what());
+    }
+    plain_entry.tags = *resolved_tags;
+
+    // 加密 password 字段（明文模式下为 no-op）；同步标签到存储
+    core::PasswordEntry enc_entry = plain_entry;
+    auto enc_result = encrypt_entry(std::move(enc_entry));
     if (!enc_result) {
         return make_error(enc_result.error().code, enc_result.error().what());
     }
@@ -661,10 +685,11 @@ core::ByteVec ServiceCore::handle_add_entry(core::ByteSpan payload) {
         return make_error(add_result.error().code, add_result.error().what());
     }
 
-    // 响应中返回明文条目（带分配的 id 与时间戳）
+    // 响应中返回明文条目（带分配的 id 与时间戳；tags 来自存储回填）
     plain_entry.id = add_result->id;
     plain_entry.created_at = add_result->created_at;
     plain_entry.updated_at = add_result->updated_at;
+    plain_entry.tags = add_result->tags;
 
     protocol::AddEntryResponse resp;
     resp.entry = std::move(plain_entry);
@@ -683,9 +708,25 @@ core::ByteVec ServiceCore::handle_update_entry(core::ByteSpan payload) {
                               req_result.error().what());
     }
 
+    // 必填字段校验：entry_name / account / password
+    if (req_result->entry.entry_name.empty() ||
+        req_result->entry.account.empty() ||
+        req_result->entry.password.empty()) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          "entry_name / account / password must not be empty");
+    }
+
     core::PasswordEntry plain_entry = req_result->entry;
 
-    auto enc_result = encrypt_entry(req_result->entry);
+    // 解析新标签（id==0）为有效 id
+    auto resolved_tags = resolve_entry_tags(req_result->entry.tags);
+    if (!resolved_tags) {
+        return make_error(resolved_tags.error().code, resolved_tags.error().what());
+    }
+    plain_entry.tags = *resolved_tags;
+
+    core::PasswordEntry enc_entry = plain_entry;
+    auto enc_result = encrypt_entry(std::move(enc_entry));
     if (!enc_result) {
         return make_error(enc_result.error().code, enc_result.error().what());
     }
@@ -696,6 +737,7 @@ core::ByteVec ServiceCore::handle_update_entry(core::ByteSpan payload) {
     }
 
     plain_entry.updated_at = upd_result->updated_at;
+    plain_entry.tags = upd_result->tags;
 
     protocol::UpdateEntryResponse resp;
     resp.entry = std::move(plain_entry);
@@ -946,6 +988,193 @@ core::ByteVec ServiceCore::handle_set_generator_limit(core::ByteSpan payload) {
     protocol::SetGeneratorLimitResponse resp;
     resp.success = true;
     return protocol::serialize(resp);
+}
+
+// ============================================================================
+// 标签（Tag）与 entry-tag 关联
+// ============================================================================
+
+core::Result<std::vector<core::Tag>> ServiceCore::resolve_entry_tags(
+    const std::vector<core::Tag>& tags) {
+    // 调用方持锁
+    std::vector<core::Tag> resolved;
+    resolved.reserve(tags.size());
+    for (const auto& t : tags) {
+        if (t.id != 0) {
+            resolved.push_back(t);
+            continue;
+        }
+        if (t.name.empty()) {
+            // 空名标签静默跳过
+            continue;
+        }
+        // 先查 by name
+        auto found = storage_->find_tag_by_name(t.name);
+        if (found) {
+            resolved.push_back(*found);
+            continue;
+        }
+        if (found.error().code != core::ErrorCode::NotFound) {
+            return core::Result<std::vector<core::Tag>>::Err(found.error());
+        }
+        // 不存在则新建（保留调用方传入的 color）
+        auto added = storage_->add_tag(t);
+        if (!added) {
+            return core::Result<std::vector<core::Tag>>::Err(added.error());
+        }
+        resolved.push_back(*added);
+    }
+    return core::Result<std::vector<core::Tag>>::Ok(std::move(resolved));
+}
+
+core::ByteVec ServiceCore::handle_add_tag(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::AddTagRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed AddTagRequest: ") +
+                              req_result.error().what());
+    }
+    auto add_result = storage_->add_tag(req_result->tag);
+    if (!add_result) {
+        return make_error(add_result.error().code, add_result.error().what());
+    }
+    protocol::AddTagResponse resp;
+    resp.tag = std::move(*add_result);
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_update_tag(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::UpdateTagRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed UpdateTagRequest: ") +
+                              req_result.error().what());
+    }
+    auto upd_result = storage_->update_tag(req_result->tag);
+    if (!upd_result) {
+        return make_error(upd_result.error().code, upd_result.error().what());
+    }
+    protocol::UpdateTagResponse resp;
+    resp.tag = std::move(*upd_result);
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_remove_tag(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::RemoveTagRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed RemoveTagRequest: ") +
+                              req_result.error().what());
+    }
+    auto rm_err = storage_->remove_tag(req_result->id);
+    if (!rm_err.ok()) {
+        return make_error(rm_err.code, rm_err.what());
+    }
+    return protocol::serialize(protocol::RemoveTagResponse{});
+}
+
+core::ByteVec ServiceCore::handle_list_tags() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto list_result = storage_->list_tags();
+    if (!list_result) {
+        return make_error(list_result.error().code, list_result.error().what());
+    }
+    protocol::ListTagsResponse resp;
+    resp.tags = std::move(*list_result);
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_get_tag(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::GetTagRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed GetTagRequest: ") +
+                              req_result.error().what());
+    }
+    auto get_result = storage_->get_tag(req_result->id);
+    if (!get_result) {
+        return make_error(get_result.error().code, get_result.error().what());
+    }
+    protocol::GetTagResponse resp;
+    resp.tag = std::move(*get_result);
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_find_tag_by_name(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::FindTagByNameRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed FindTagByNameRequest: ") +
+                              req_result.error().what());
+    }
+    auto find_result = storage_->find_tag_by_name(req_result->name);
+    if (!find_result) {
+        return make_error(find_result.error().code, find_result.error().what());
+    }
+    protocol::FindTagByNameResponse resp;
+    resp.tag = std::move(*find_result);
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_get_entry_tags(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::GetEntryTagsRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed GetEntryTagsRequest: ") +
+                              req_result.error().what());
+    }
+    auto get_result = storage_->get_entry_tags(req_result->entry_id);
+    if (!get_result) {
+        return make_error(get_result.error().code, get_result.error().what());
+    }
+    protocol::GetEntryTagsResponse resp;
+    resp.tags = std::move(*get_result);
+    return protocol::serialize(resp);
+}
+
+core::ByteVec ServiceCore::handle_set_entry_tags(core::ByteSpan payload) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!unlocked_) {
+        return make_error(core::ErrorCode::Unauthorized, "vault is locked");
+    }
+    auto req_result = protocol::deserialize<protocol::SetEntryTagsRequest>(payload);
+    if (!req_result) {
+        return make_error(core::ErrorCode::InvalidArgument,
+                          std::string("malformed SetEntryTagsRequest: ") +
+                              req_result.error().what());
+    }
+    auto set_err = storage_->set_entry_tags(req_result->entry_id, req_result->tag_ids);
+    if (!set_err.ok()) {
+        return make_error(set_err.code, set_err.what());
+    }
+    return protocol::serialize(protocol::SetEntryTagsResponse{});
 }
 
 }  // namespace pwdvault::service

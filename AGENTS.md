@@ -37,25 +37,31 @@ PwdVault/
 │   │   ├── IpcServer.cpp       # 命名管道服务端
 │   │   ├── ServiceCore.cpp     # 命令分发与业务逻辑
 │   │   └── ProgramPasswordStore.cpp  # 程序密码与 encryption_key 持久化（vault.meta）
-│   ├── ui/                     # UI 进程
-│   │   ├── main.cpp            # Qt 入口（拉起 service）
-│   │   ├── MainWindow.cpp      # 主窗口与侧边栏
-│   │   ├── IpcClient.cpp       # 命名管道客户端
-│   │   ├── StrengthUtil.cpp    # 密码强度等级 → UI 属性集中映射
-│   │   └── views/              # 5 个功能视图 + 3 个对话框
-│   └── migrate/                # 旧 Python 数据迁移工具
-│       ├── main.cpp            # CLI 入口
-│       ├── FernetDecoder.cpp   # Fernet token 解密
-│       └── Base64.cpp          # URL-safe base64 解码
+│   └── ui/                     # UI 进程
+│       ├── main.cpp            # Qt 入口（拉起 service）
+│       ├── MainWindow.cpp      # 主窗口与侧边栏
+│       ├── IpcClient.cpp       # 命名管道客户端
+│       ├── StrengthUtil.cpp    # 密码强度等级 → UI 属性集中映射
+│       ├── FlowLayout.cpp      # 流式布局（标签芯片自动换行）
+│       ├── MarkdownUtil.cpp    # Markdown → HTML 转换（自实现，无外部依赖）
+│       └── views/              # 5 个功能视图 + 4 个对话框
+│           ├── UnlockView.cpp          # 解锁视图
+│           ├── ProgramPasswordDialog.cpp  # 程序密码管理
+│           ├── PasswordBookView.cpp    # 密码本（master-detail）
+│           ├── InputView.cpp           # 录入视图
+│           ├── GeneratorView.cpp       # 生成器视图
+│           ├── SettingsView.cpp        # 设置视图
+│           ├── EditEntryDialog.cpp     # 编辑条目对话框（模态）
+│           ├── GeneratorHistoryDialog.cpp  # 生成器历史记录
+│           └── TagInputWidget.cpp      # 标签芯片输入控件
 ├── tests/                      # GoogleTest 单元/集成测试
-│   ├── crypto/                 # 加密引擎测试（19 用例）
-│   ├── storage/                # 存储引擎测试（21 用例）
-│   ├── generator/              # 生成器测试（15 用例）
-│   ├── protocol/               # 协议序列化测试（28 用例）
-│   ├── integration/            # 端到端流程测试（19 用例）
-│   └── migrate/                # Fernet 解码测试（17 用例）
+│   ├── crypto/                 # 加密引擎测试
+│   ├── storage/                # 存储引擎测试
+│   ├── generator/              # 生成器测试
+│   ├── protocol/               # 协议序列化测试
+│   └── integration/            # 端到端流程测试
 ├── docs/                       # 设计文档（见下文导航）
-├── legacy-python/              # 原 Python + Tkinter 实现（归档，只读参考）
+├── legacy-python/               # 原 Python + Tkinter 实现（归档，只读参考）
 ├── LICENSE                     # MIT
 ├── README.md                   # 终端用户文档
 └── AGENTS.md                   # 本文件
@@ -100,7 +106,6 @@ cmake --build build --target package_inno
 
 - `pwdvault-ui.exe`：GUI 入口（双击启动，会自动拉起 service）
 - `pwdvault-service.exe`：服务进程（通常由 UI 自动拉起，也可独立运行调试）
-- `pwdvault-migrate.exe`：旧数据迁移工具
 
 ---
 
@@ -112,7 +117,6 @@ cmake --build build --target package_inno
 | [docs/BUILD.md](docs/BUILD.md)                      | 详细环境配置、构建命令、调试技巧、常见问题排查     |
 | [docs/IPC_PROTOCOL.md](docs/IPC_PROTOCOL.md)        | 命名管道属性、MessageHeader 字段、命令列表、序列化方案、字节级时序示例 |
 | [docs/SECURITY.md](docs/SECURITY.md)                | 威胁模型、加密算法选型、密钥层次、敏感数据清零、已知限制 |
-| [docs/MIGRATION.md](docs/MIGRATION.md)              | 旧 Python 数据迁移步骤、`pwdvault-migrate.exe` 用法、故障排查 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)          | Git 工作流、提交规范、PR 规范、版本管理、发布流程   |
 | [README.md](README.md)                              | 终端用户文档（功能介绍、下载安装、使用教程）       |
 
@@ -126,7 +130,7 @@ cmake --build build --target package_inno
 - **命名空间**：
   - `pwdvault::core` — 核心类型与接口
   - `pwdvault::crypto` / `storage` / `generator` / `protocol` — 各引擎
-  - `pwdvault::service` / `ui` / `migrate` — 各进程
+  - `pwdvault::service` / `ui` — 各进程
 - **头文件保护**：统一用 `#pragma once`，不用 include guard
 - **错误处理**：使用 `core::Result<T>` 而非异常；接口返回 `Result<T>::Err(...)` 表失败
 - **资源管理**：RAII 优先，OpenSSL/SQLite/Windows HANDLE 用 `std::unique_ptr` + 自定义 deleter
@@ -196,10 +200,6 @@ Qt 6 Widgets GUI 程序，不持有任何敏感数据，所有操作通过 IPC �
 | `views/GeneratorHistoryDialog.cpp` | 生成器历史记录对话框（表格展示、复制、删除单条、清空、显示/隐藏密码切换） |
 | `views/EditEntryDialog.cpp`    | 编辑条目对话框（模态）                     |
 
-### 迁移工具（`src/migrate/`）
-
-独立命令行程序 `pwdvault-migrate.exe`，从旧 Python 版 `passwords.db` + `key.key` 迁移到新格式。详见 [`docs/MIGRATION.md`](docs/MIGRATION.md)。
-
 ---
 
 ## 添加新功能指南
@@ -250,7 +250,7 @@ Qt 6 Widgets GUI 程序，不持有任何敏感数据，所有操作通过 IPC �
 
 ## 修改代码前的必读规则
 
-1. **接口稳定性**：`src/sdk/core/` 下的抽象接口（`IStorageEngine`、`ICryptoEngine`、`IPasswordGenerator`）一旦发布应保持稳定。修改前评估对 service、ui、migrate、tests 的影响。
+1. **接口稳定性**：`src/sdk/core/` 下的抽象接口（`IStorageEngine`、`ICryptoEngine`、`IPasswordGenerator`）一旦发布应保持稳定。修改前评估对 service、ui、tests 的影响。
 2. **不要修改 `legacy-python/`**：该目录是历史归档，仅作参考。
 3. **测试必须通过**：修改任何 SDK 模块后，运行对应 `tests/<module>/` 的测试；修改 service 后运行 `tests/integration/`。
 4. **文档同步**：修改 IPC 协议、加密方案、数据格式、文件位置等用户可见行为时，同步更新 `docs/` 对应文档。

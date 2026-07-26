@@ -23,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "Commands.h"
 #include "Error.h"
@@ -86,6 +87,16 @@ public:
     core::Result<protocol::ListEntriesResponse> list_entries();
     core::Result<protocol::GeneratePasswordResponse> generate_password(const core::PasswordGeneratorOptions& options);
     core::Result<protocol::EstimateStrengthResponse> estimate_strength(const std::string& password);
+
+    // 标签管理
+    core::Result<protocol::AddTagResponse> add_tag(const core::Tag& tag);
+    core::Result<protocol::UpdateTagResponse> update_tag(const core::Tag& tag);
+    core::Result<protocol::RemoveTagResponse> remove_tag(int64_t id);
+    core::Result<protocol::ListTagsResponse> list_tags();
+    core::Result<protocol::GetTagResponse> get_tag(int64_t id);
+    core::Result<protocol::FindTagByNameResponse> find_tag_by_name(const std::string& name);
+    core::Result<protocol::GetEntryTagsResponse> get_entry_tags(int64_t entry_id);
+    core::Result<protocol::SetEntryTagsResponse> set_entry_tags(int64_t entry_id, const std::vector<int64_t>& tag_ids);
 
     // 生成器历史记录
     core::Result<protocol::ListGeneratedRecordsResponse> list_generated_records();
