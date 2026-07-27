@@ -45,10 +45,23 @@ signals:
     /// MainWindow 可据此调整锁定按钮可见性等。
     void password_state_changed(bool enabled);
 
+    /// 自动锁定下拉选择变化后触发，
+    /// \param minutes 0 = 不自动锁定；1/5/15/30 = 对应分钟数。
+    /// MainWindow 收到后启动 / 重置 / 停止 autolock_timer_。
+    void autolock_changed(int minutes);
+
+    /// 用户在生成历史对话框空状态点击「去生成密码」时触发，
+    /// MainWindow 收到后切换到 GeneratorView。
+    void generate_requested();
+
 public slots:
     /// 查询 service 当前 vault 状态并刷新 UI 显示。
     /// 应在视图显示前调用（如主窗口启动后、解锁成功后）。
     void refresh_status();
+
+    /// 返回当前自动锁定下拉选中的分钟数（0 = 不自动锁定；1/5/15/30）。
+    /// MainWindow 启动时调用以读取持久化值并启动 timer。
+    int get_autolock_minutes() const;
 
 private slots:
     void on_manage_password_clicked();
@@ -59,6 +72,9 @@ private slots:
     void on_theme_segment_clicked(int idx);
     void on_view_generator_history_clicked();
     void on_generator_limit_changed(int index);
+    /// 自动锁定下拉 currentIndexChanged 槽：
+    /// 解析 itemData 取 minutes，emit autolock_changed 并持久化到 QSettings。
+    void on_autolock_changed(int index);
 
 private:
     void build_ui();
@@ -106,6 +122,8 @@ private:
     QPushButton* view_history_btn_ = nullptr;
     QComboBox* gen_limit_combo_ = nullptr;
     bool gen_limit_syncing_ = false;          // 防止 sync 时触发 on_generator_limit_changed
+    bool loading_history_ = false;            // 历史记录异步加载中（list_generated_records）
+    bool loading_settings_ = false;           // 生成器设置异步加载中（get_generator_settings）
 
     // 外观区
     QButtonGroup* theme_group_ = nullptr;

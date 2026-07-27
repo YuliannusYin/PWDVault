@@ -6,14 +6,17 @@
 // 640px 居中卡片 + fieldLabel 字段标签 + inputField 容器 + 强度条。
 // =============================================================================
 #include "GeneratorView.h"
+#include "ErrorMessages.h"
 #include "IconKit.h"
 #include "IpcClient.h"
 #include "StrengthUtil.h"
+#include "Toast.h"
 
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
@@ -54,8 +57,6 @@ void GeneratorView::build_ui() {
     auto* scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setStyleSheet(
-        QStringLiteral("QScrollArea { background-color: transparent; border: none; }"));
 
     auto* scroll_content = new QWidget(scroll);
     // 不设 setStyleSheet("background: transparent;")：widget 级样式表优先级
@@ -76,19 +77,19 @@ void GeneratorView::build_ui() {
     card_layout->setSpacing(0);
 
     // 标题
-    auto* title = new QLabel(QStringLiteral("密码生成器"), card);
+    auto* title = new QLabel(tr("密码生成器"), card);
     title->setProperty("cssClass", QStringLiteral("sectionTitle"));
     card_layout->addWidget(title);
 
     auto* subtitle = new QLabel(
-        QStringLiteral("自定义字符集与长度，一键生成强密码"), card);
+        tr("自定义字符集与长度，一键生成强密码"), card);
     subtitle->setProperty("cssClass", QStringLiteral("muted"));
     card_layout->addWidget(subtitle);
 
     card_layout->addSpacing(24);
 
     // ── 密码长度 ──
-    auto* length_label = new QLabel(QStringLiteral("密码长度"), card);
+    auto* length_label = new QLabel(tr("密码长度"), card);
     length_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     card_layout->addWidget(length_label);
     card_layout->addSpacing(6);
@@ -109,7 +110,7 @@ void GeneratorView::build_ui() {
     card_layout->addSpacing(16);
 
     // ── 字符集（扁平 checkbox 列） ──
-    auto* charset_label = new QLabel(QStringLiteral("字符集"), card);
+    auto* charset_label = new QLabel(tr("字符集"), card);
     charset_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     card_layout->addWidget(charset_label);
     card_layout->addSpacing(6);
@@ -118,24 +119,24 @@ void GeneratorView::build_ui() {
     charset_col->setContentsMargins(0, 0, 0, 0);
     charset_col->setSpacing(8);
 
-    upper_check_ = new QCheckBox(QStringLiteral("大写字母 A-Z"), card);
+    upper_check_ = new QCheckBox(tr("大写字母 A-Z"), card);
     upper_check_->setChecked(true);
     charset_col->addWidget(upper_check_);
 
-    lower_check_ = new QCheckBox(QStringLiteral("小写字母 a-z"), card);
+    lower_check_ = new QCheckBox(tr("小写字母 a-z"), card);
     lower_check_->setChecked(true);
     charset_col->addWidget(lower_check_);
 
-    digits_check_ = new QCheckBox(QStringLiteral("数字 0-9"), card);
+    digits_check_ = new QCheckBox(tr("数字 0-9"), card);
     digits_check_->setChecked(true);
     charset_col->addWidget(digits_check_);
 
-    symbols_check_ = new QCheckBox(QStringLiteral("符号 !@#$%^&*..."), card);
+    symbols_check_ = new QCheckBox(tr("符号 !@#$%^&*..."), card);
     symbols_check_->setChecked(true);
     charset_col->addWidget(symbols_check_);
 
     exclude_ambiguous_check_ = new QCheckBox(
-        QStringLiteral("排除易混字符 (i l 1 L o 0 O)"), card);
+        tr("排除易混字符 (i l 1 L o 0 O)"), card);
     charset_col->addWidget(exclude_ambiguous_check_);
 
     card_layout->addLayout(charset_col);
@@ -143,7 +144,7 @@ void GeneratorView::build_ui() {
     card_layout->addSpacing(16);
 
     // ── 自定义字符（inputField 容器 + plus 图标） ──
-    auto* custom_label = new QLabel(QStringLiteral("自定义字符"), card);
+    auto* custom_label = new QLabel(tr("自定义字符"), card);
     custom_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     card_layout->addWidget(custom_label);
     card_layout->addSpacing(6);
@@ -164,7 +165,7 @@ void GeneratorView::build_ui() {
 
     custom_chars_edit_ = new QLineEdit(custom_container);
     custom_chars_edit_->setProperty("cssClass", QStringLiteral("inlineEdit"));
-    custom_chars_edit_->setPlaceholderText(QStringLiteral("可选：追加自定义字符集"));
+    custom_chars_edit_->setPlaceholderText(tr("可选：追加自定义字符集"));
     custom_layout->addWidget(custom_chars_edit_, 1);
     card_layout->addWidget(custom_container);
 
@@ -174,7 +175,7 @@ void GeneratorView::build_ui() {
     generate_button_ = new QPushButton(card);
     generate_button_->setIcon(tinted_icon(QStringLiteral(":/icons/wand-2.svg"), IconRole::OnPrimary));
     generate_button_->setIconSize(QSize(16, 16));
-    generate_button_->setText(QStringLiteral("生成密码"));
+    generate_button_->setText(tr("生成密码"));
     generate_button_->setCursor(Qt::PointingHandCursor);
     generate_button_->setFixedHeight(40);
     generate_button_->setProperty("cssClass", QStringLiteral("primary"));
@@ -190,7 +191,7 @@ void GeneratorView::build_ui() {
     card_layout->addSpacing(16);
 
     // ── 生成结果（inputField 容器 + key 图标 + 内嵌复制按钮） ──
-    auto* result_label = new QLabel(QStringLiteral("生成结果"), card);
+    auto* result_label = new QLabel(tr("生成结果"), card);
     result_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     card_layout->addWidget(result_label);
     card_layout->addSpacing(6);
@@ -201,7 +202,7 @@ void GeneratorView::build_ui() {
     copy_button_->setIconSize(QSize(16, 16));
     copy_button_->setCursor(Qt::PointingHandCursor);
     copy_button_->setFixedSize(36, 40);
-    copy_button_->setToolTip(QStringLiteral("复制到剪贴板"));
+    copy_button_->setToolTip(tr("复制到剪贴板"));
     copy_button_->setEnabled(false);
     copy_button_->setProperty("cssClass", QStringLiteral("inlineBtn"));
 
@@ -222,7 +223,7 @@ void GeneratorView::build_ui() {
     result_edit_ = new QLineEdit(result_container);
     result_edit_->setReadOnly(true);
     result_edit_->setProperty("cssClass", QStringLiteral("inlineEdit"));
-    result_edit_->setPlaceholderText(QStringLiteral("生成的密码将显示在这里"));
+    result_edit_->setPlaceholderText(tr("生成的密码将显示在这里"));
     result_layout->addWidget(result_edit_, 1);
     result_layout->addWidget(copy_button_);
     card_layout->addWidget(result_container);
@@ -238,7 +239,7 @@ void GeneratorView::build_ui() {
     strength_bar_->setFixedHeight(4);
     strength_bar_->setProperty("strength", QStringLiteral("weak"));
     strength_row->addWidget(strength_bar_, 1);
-    strength_label_ = new QLabel(QStringLiteral("强度：-"), card);
+    strength_label_ = new QLabel(tr("强度：-"), card);
     strength_label_->setProperty("cssClass", QStringLiteral("caption"));
     strength_row->addWidget(strength_label_);
     card_layout->addLayout(strength_row);
@@ -257,6 +258,7 @@ void GeneratorView::build_ui() {
 }
 
 void GeneratorView::on_generate_clicked() {
+    if (generating_) return;
     if (!client_) return;
 
     core::PasswordGeneratorOptions options;
@@ -275,66 +277,84 @@ void GeneratorView::on_generate_clicked() {
         result_edit_->setText(QString());
         copy_button_->setEnabled(false);
         strength_bar_->setValue(0);
-        set_strength_label(QStringLiteral("请至少选择一种字符集。"),
+        set_strength_label(tr("请至少选择一种字符集。"),
                            QStringLiteral("error"));
         return;
     }
 
-    auto result = client_->generate_password(options);
-    if (result.ok()) {
-        const QString password = QString::fromStdString(result.value().password);
-        result_edit_->setText(password);
-        copy_button_->setEnabled(true);
-        update_strength(password);
-        emit password_generated(password);
-    } else {
-        result_edit_->setText(QString());
-        copy_button_->setEnabled(false);
-        strength_bar_->setValue(0);
-        const QString msg = QString::fromStdString(result.error().what());
-        set_strength_label(msg.isEmpty()
-                           ? QStringLiteral("生成失败。")
-                           : QStringLiteral("生成失败：%1").arg(msg),
-                           QStringLiteral("error"));
-    }
+    generating_ = true;
+    generate_button_->setEnabled(false);
+    generate_button_->setText(tr("生成中…"));
+
+    auto* watcher = new QFutureWatcher<core::Result<protocol::GeneratePasswordResponse>>(this);
+    connect(watcher, &QFutureWatcher<core::Result<protocol::GeneratePasswordResponse>>::finished,
+            this, [this, watcher]() {
+        generating_ = false;
+        generate_button_->setEnabled(true);
+        generate_button_->setText(tr("生成密码"));
+
+        auto result = watcher->result();
+        if (result.ok()) {
+            const QString password = QString::fromStdString(result.value().password);
+            result_edit_->setText(password);
+            copy_button_->setEnabled(true);
+            estimate_strength_async(password);
+            emit password_generated(password);
+        } else {
+            result_edit_->setText(QString());
+            copy_button_->setEnabled(false);
+            strength_bar_->setValue(0);
+            strength_bar_->setProperty("strength", QStringLiteral("weak"));
+            strength_bar_->style()->unpolish(strength_bar_);
+            strength_bar_->style()->polish(strength_bar_);
+            set_strength_label(tr("强度：-"),
+                               QStringLiteral("caption"));
+            Toast::show(this, friendly_message(result.error()));
+        }
+        watcher->deleteLater();
+    });
+    watcher->setFuture(client_->generate_password_async(options));
 }
 
 void GeneratorView::on_copy_clicked() {
     const QString password = result_edit_->text();
     if (password.isEmpty()) return;
     copy_secure_to_clipboard(password);
-    set_strength_label(QStringLiteral("已复制到剪贴板。"),
-                       QStringLiteral("success"));
+    Toast::show(this, tr("已复制，30 秒后自动清空"));
 }
 
-void GeneratorView::update_strength(const QString& password) {
+void GeneratorView::estimate_strength_async(const QString& password) {
     if (!client_ || password.isEmpty()) {
         strength_bar_->setValue(0);
         strength_bar_->setProperty("strength", QStringLiteral("weak"));
         strength_bar_->style()->unpolish(strength_bar_);
         strength_bar_->style()->polish(strength_bar_);
-        set_strength_label(QStringLiteral("强度：-"),
+        set_strength_label(tr("强度：-"),
                            QStringLiteral("caption"));
         return;
     }
 
-    auto result = client_->estimate_strength(password.toStdString());
-    core::StrengthEstimate estimate;
-    if (result.ok()) {
-        estimate = result.value().estimate;
-    }
-
-    const int pct = (estimate.bits >= 128) ? 100 : (estimate.bits * 100 / 128);
-    strength_bar_->setValue(pct);
-
-    // 通过 strength 属性让 QSS 接管 chunk 颜色
-    strength_bar_->setProperty("strength", strength_qss_key(estimate.level));
-    strength_bar_->style()->unpolish(strength_bar_);
-    strength_bar_->style()->polish(strength_bar_);
-
-    set_strength_label(
-        QStringLiteral("强度：%1（%2 bit）").arg(strength_text(estimate.level)).arg(estimate.bits),
-        strength_label_class(estimate.level));
+    const std::string pwd = password.toStdString();
+    auto* watcher = new QFutureWatcher<core::Result<protocol::EstimateStrengthResponse>>(this);
+    connect(watcher, &QFutureWatcher<core::Result<protocol::EstimateStrengthResponse>>::finished,
+            this, [this, watcher]() {
+        auto r = watcher->result();
+        if (r.ok()) {
+            const auto& estimate = r.value().estimate;
+            const int pct = (estimate.bits >= 128) ? 100 : (estimate.bits * 100 / 128);
+            strength_bar_->setValue(pct);
+            // 通过 strength 属性让 QSS 接管 chunk 颜色
+            strength_bar_->setProperty("strength", strength_qss_key(estimate.level));
+            strength_bar_->style()->unpolish(strength_bar_);
+            strength_bar_->style()->polish(strength_bar_);
+            set_strength_label(
+                tr("强度：%1（%2 bit）")
+                    .arg(strength_text(estimate.level)).arg(estimate.bits),
+                strength_label_class(estimate.level));
+        }
+        watcher->deleteLater();
+    });
+    watcher->setFuture(client_->estimate_strength_async(pwd));
 }
 
 void GeneratorView::set_strength_label(const QString& text, const QString& css_class) {

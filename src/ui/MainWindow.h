@@ -32,6 +32,7 @@
 #include <QMainWindow>
 #include <QString>
 #include <QSystemTrayIcon>
+#include <QTimer>
 
 class QButtonGroup;
 class QFrame;
@@ -60,6 +61,9 @@ protected:
     /// 处理 Windows 原生消息，用于无边框窗口的拖动 / Aero Snap / 任务栏右键菜单。
     bool nativeEvent(const QByteArray& eventType, void* message,
                      qintptr* result) override;
+    /// 应用级事件过滤器：监听鼠标 / 键盘活动，重置 autolock_timer_ 倒计时。
+    /// 安装在 qApp 上（见构造函数末尾），覆盖所有窗口与子控件的事件。
+    bool eventFilter(QObject* obj, QEvent* event) override;
 
 private slots:
     void on_nav_clicked(int row);
@@ -81,6 +85,8 @@ private slots:
     void on_password_generator_requested();
     void on_password_generated(const QString& password);
     void on_entry_count_changed(int count);
+    void on_entry_add_requested();
+    void on_generate_requested_from_history();
 
     // 自定义窗口控制
     void on_minimize_clicked();
@@ -99,14 +105,19 @@ private:
     void update_connection_status();
     void attempt_reconnect();
 
+    /// 设置顶栏标题（带 elide 截断，防止窗口最小化时挤压右侧按钮）。
+    void set_topbar_title(const QString& title);
+
     /// 构建系统托盘图标与右键菜单。
     void build_tray_icon();
 
     /// 显示并激活主窗口（从托盘还原 / 从最小化还原统一入口）。
     void show_and_activate();
 
-    /// 查询 vault 状态判断是否需要显示解锁视图。
-    bool should_show_unlock() const;
+    /// 异步启动初始流程：查询 vault 状态，加密且已锁定则显示解锁视图，
+    /// 否则刷新各视图。IPC 失败时仍尝试刷新。结果通过 QFutureWatcher 在
+    /// 主线程接收，避免阻塞 UI 线程。
+    void start_initial_flow();
 
     /// 显示解锁视图（模态）。
     void show_unlock();
@@ -119,6 +130,11 @@ private:
 
     /// 重新着色顶栏图标按钮（按当前主题）。
     void refresh_topbar_icons();
+
+    /// 配置自动锁定：minutes > 0 时启动 / 重置倒计时；minutes == 0 时停止。
+    /// 同时持久化到 QSettings（与 SettingsView::on_autolock_changed 双写）。
+    /// 锁定状态（unlock_view_ 显示）下不会启动 timer，避免重复触发。
+    void setup_autolock(int minutes);
 
     IpcClient* client_;
 
@@ -160,6 +176,15 @@ private:
 
     // 标记生成器是否由 InputView 请求打开
     bool generator_from_input_ = false;
+
+    // 启动流程标记：构造函数末尾 start_initial_flow 期间为 true，
+    // 异步回调进入后置 false。用于防止启动期间用户操作（保留扩展用）。
+    bool starting_up_ = true;
+
+    // 自动锁定倒计时 timer：单次触发，超时调用 client_->lock() + show_unlock()
+    QTimer* autolock_timer_ = nullptr;
+    // 当前自动锁定分钟数（0 = 不自动锁定；1/5/15/30 = 对应分钟）
+    int autolock_minutes_ = 0;
 };
 
 }  // namespace pwdvault::ui

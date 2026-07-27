@@ -14,6 +14,7 @@
 // =============================================================================
 #pragma once
 
+#include <QString>
 #include <QWidget>
 
 class QLabel;
@@ -21,7 +22,12 @@ class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
 class QProgressBar;
+class QShowEvent;
 class QTimer;
+
+namespace pwdvault::core {
+struct StrengthEstimate;
+}
 
 namespace pwdvault::ui {
 
@@ -47,6 +53,10 @@ signals:
     /// 用户点击「生成密码」时触发，MainWindow 切换到生成器视图。
     void password_generator_requested();
 
+protected:
+    /// 首次显示时触发标签补全列表异步加载（Task 28 防重）。
+    void showEvent(QShowEvent* event) override;
+
 private slots:
     void on_generate_clicked();
     void on_toggle_password_clicked();
@@ -56,10 +66,15 @@ private slots:
 
 private:
     void build_ui();
+    /// 入口：启动 debounce 计时器，300ms 无新输入后发起异步强度评估。
     void update_strength(const QString& password);
+    /// UI 更新：根据 service 返回的 StrengthEstimate 刷新强度条与文案。
+    void update_strength_ui(const core::StrengthEstimate& estimate);
     void set_error(const QString& message);
-    /// 从 service 加载全部已知标签，刷新 TagInputWidget 的补全列表。
+    /// 同步入口（向后兼容），内部委托给 async 版本。
     void refresh_existing_tags();
+    /// 异步加载全部已知标签，刷新 TagInputWidget 的补全列表。
+    void refresh_existing_tags_async();
 
     IpcClient* client_;
 
@@ -79,6 +94,9 @@ private:
     QLabel* error_label_ = nullptr;
     QTimer* strength_timer_ = nullptr;  ///< 强度评估 debounce 计时器
     bool password_visible_ = false;
+    bool tags_loaded_ = false;       ///< Task 28：标签补全列表是否已加载，防重复请求
+    bool saving_ = false;            ///< 保存中状态，防重复点击
+    QString pending_password_;       ///< debounce 期间捕获的密码文本
 };
 
 }  // namespace pwdvault::ui

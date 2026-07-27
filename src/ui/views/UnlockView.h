@@ -20,6 +20,7 @@ class QCloseEvent;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QTimer;
 
 namespace pwdvault::ui {
 
@@ -46,15 +47,23 @@ private slots:
     void on_visibility_toggled();
     void on_submit_clicked();
     void on_password_changed(const QString& text);
+    /// 冷却倒计时每秒 tick：递减剩余秒数，归零后恢复输入控件。
+    void on_cooldown_tick();
 
 private:
     void build_ui();
     void set_error(const QString& message);
     void update_attempts_display();
+    /// 从 service 返回的 error_message 解析剩余次数 / 冷却秒数。
+    /// 命中任一格式返回 true（已同步 UI 显示）；均不命中返回 false（调用方回退本地递减）。
+    bool parse_unlock_failure(const QString& message);
+    /// 进入冷却态：禁用提交与密码输入框，启动每秒倒计时。
+    void start_cooldown(int seconds);
 
     IpcClient* client_;
     bool unlock_succeeded_ = false;
     int remaining_attempts_ = 5;
+    int cooldown_remaining_seconds_ = 0;
 
     QLabel* shield_icon_label_ = nullptr;
     QLabel* title_label_ = nullptr;
@@ -64,6 +73,7 @@ private:
     QLabel* attempts_label_ = nullptr;
     QPushButton* submit_button_ = nullptr;
     QLabel* error_label_ = nullptr;
+    QTimer* cooldown_timer_ = nullptr;
     bool password_visible_ = false;
 };
 

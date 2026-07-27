@@ -22,6 +22,7 @@
 #include <QProcess>
 #include <QString>
 #include <QStringList>
+#include <QTranslator>
 
 namespace {
 
@@ -79,6 +80,14 @@ int main(int argc, char* argv[]) {
     app_font.setPointSize(9);
     QApplication::setFont(app_font);
 
+    // 加载中文翻译（Task 37 会用 tr() 包裹字符串，由 lrelease 生成 .qm）。
+    // .qm 通过 CMake qt_add_translation 生成并嵌入资源 :/translations/。
+    // 加载失败不影响启动（仅缺少翻译，UI 退回源码字面量）。
+    QTranslator translator;
+    if (translator.load(QStringLiteral(":/translations/pwdvault_zh_CN.qm"))) {
+        app.installTranslator(&translator);
+    }
+
     // 加载持久化主题（dark / light qss），必须在 MainWindow 创建前调用
     pwdvault::ui::Theme::load_initial_theme(&app);
 
@@ -90,9 +99,10 @@ int main(int argc, char* argv[]) {
         // 2) 拉起 service 进程
         if (!launch_service()) {
             QMessageBox::critical(nullptr,
-                QStringLiteral("启动失败"),
-                QStringLiteral("无法连接 service 且未找到 pwdvault-service.exe。\n"
-                               "请确认 service 已安装在与 UI 同目录下。"));
+                QCoreApplication::translate("main", "启动失败"),
+                QCoreApplication::translate("main",
+                    "无法连接 service 且未找到 pwdvault-service.exe。\n"
+                    "请确认 service 已安装在与 UI 同目录下。"));
         } else {
             // 3) 再次重试连接（connect_to_service 内部 3 次重试）
             client.connect_to_service();

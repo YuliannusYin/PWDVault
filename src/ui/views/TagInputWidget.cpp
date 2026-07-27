@@ -21,38 +21,14 @@
 
 namespace pwdvault::ui {
 
-namespace {
-
-/// 透明融入 FlowLayout 的 QLineEdit，支持「空输入时退格删除最后一个芯片」。
-class ChipLineEdit : public QLineEdit {
-    Q_OBJECT
-public:
-    explicit ChipLineEdit(QWidget* parent = nullptr) : QLineEdit(parent) {
-        setStyleSheet(QStringLiteral("border: none; background: transparent;"));
-        setPlaceholderText(QStringLiteral("输入标签后回车"));
-    }
-
-signals:
-    void backspaceAtEmpty();
-
-protected:
-    void keyPressEvent(QKeyEvent* event) override {
-        if (event->key() == Qt::Key_Backspace && text().isEmpty()) {
-            emit backspaceAtEmpty();
-            event->accept();
-            return;
-        }
-        QLineEdit::keyPressEvent(event);
-    }
-};
-
-}  // namespace
-
 TagInputWidget::TagInputWidget(QWidget* parent) : QWidget(parent) {
     chips_layout_ = new FlowLayout(this, /*margin=*/0, /*hSpacing=*/6, /*vSpacing=*/6);
 
-    input_ = new ChipLineEdit(this);
+    input_ = new QLineEdit(this);
+    input_->setProperty("cssClass", QStringLiteral("tagInput"));
+    input_->setPlaceholderText(tr("输入标签后回车"));
     input_->setMinimumWidth(120);
+    input_->installEventFilter(this);
     chips_layout_->addWidget(input_);
 
     completer_ = new QCompleter(this);
@@ -62,8 +38,6 @@ TagInputWidget::TagInputWidget(QWidget* parent) : QWidget(parent) {
     input_->setCompleter(completer_);
 
     connect(input_, &QLineEdit::returnPressed, this, &TagInputWidget::on_return_pressed);
-    connect(static_cast<ChipLineEdit*>(input_), &ChipLineEdit::backspaceAtEmpty,
-            this, [this]() { remove_tag_at(static_cast<int>(selected_tags_.size()) - 1); });
 }
 
 TagInputWidget::~TagInputWidget() = default;
@@ -203,6 +177,15 @@ void TagInputWidget::focus_input() {
     input_->setFocus();
 }
 
-}  // namespace pwdvault::ui
+bool TagInputWidget::eventFilter(QObject* obj, QEvent* event) {
+    if (obj == input_ && event->type() == QEvent::KeyPress) {
+        auto* key_event = static_cast<QKeyEvent*>(event);
+        if (key_event->key() == Qt::Key_Backspace && input_->text().isEmpty()) {
+            remove_tag_at(static_cast<int>(selected_tags_.size()) - 1);
+            return true;  // 事件已处理，不再传递
+        }
+    }
+    return QWidget::eventFilter(obj, event);
+}
 
-#include "TagInputWidget.moc"
+}  // namespace pwdvault::ui

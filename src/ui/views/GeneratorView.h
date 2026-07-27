@@ -36,11 +36,16 @@ private slots:
 
 private:
     void build_ui();
-    void update_strength(const QString& password);
+    /// 异步评估密码强度并更新 strength_bar_ / strength_label_。
+    /// 空密码同步重置 UI；非空则通过 estimate_strength_async 走线程池。
+    void estimate_strength_async(const QString& password);
     /// 统一更新 strength_label_ 文本与 cssClass（触发 QSS 重新评估）。
     void set_strength_label(const QString& text, const QString& css_class);
 
     IpcClient* client_;
+
+    /// 防止生成按钮重复点击（异步调用期间禁用）。
+    bool generating_ = false;
 
     QSpinBox* length_spin_ = nullptr;
     QCheckBox* upper_check_ = nullptr;

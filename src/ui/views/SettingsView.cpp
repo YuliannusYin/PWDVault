@@ -6,23 +6,28 @@
 // 卡片分节布局：安全 / 外观 / 存储 / 关于 / 危险操作。
 // =============================================================================
 #include "SettingsView.h"
+#include "ErrorMessages.h"
 #include "IpcClient.h"
 #include "ProgramPasswordDialog.h"
 #include "GeneratorHistoryDialog.h"
 #include "Theme.h"
 #include "IconKit.h"
+#include "Toast.h"
+#include "Version.h"
 
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QString>
@@ -35,8 +40,8 @@ namespace pwdvault::ui {
 
 namespace {
 
-/// 应用版本号。
-constexpr const char* kAppVersion = "3.2.0";
+/// 应用版本号（由 CMake configure_file 从 Version.h.in 生成，取自顶层 project() VERSION）。
+constexpr const char* kAppVersion = PWDVAULT_VERSION;
 
 /// GitHub 项目主页 URL。
 constexpr const char* kGitHubUrl = "https://github.com/YuliannusYin/PWDVault";
@@ -99,8 +104,6 @@ void SettingsView::build_ui() {
     auto* scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setStyleSheet(
-        QStringLiteral("QScrollArea { background: transparent; border: none; }"));
     outer->addWidget(scroll);
 
     auto* content = new QWidget(scroll);
@@ -130,8 +133,8 @@ void SettingsView::build_ui() {
     // ── 安全 section ──
     {
         auto* section = make_section(QStringLiteral(":/icons/shield-check.svg"),
-                                     QStringLiteral("安全"), false, center_container,
-                                     QColor(QStringLiteral("#2bd576")));
+                                     tr("安全"), false, center_container,
+                                     icon_color(IconRole::Success));
         center_layout->addWidget(section);
         auto* section_layout = qobject_cast<QVBoxLayout*>(section->layout());
 
@@ -143,7 +146,7 @@ void SettingsView::build_ui() {
         manage_pp_btn_ = new QPushButton(section);
         manage_pp_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/settings-2.svg"), IconRole::Normal));
         manage_pp_btn_->setIconSize(QSize(16, 16));
-        manage_pp_btn_->setText(QStringLiteral("管理程序密码"));
+        manage_pp_btn_->setText(tr("管理程序密码"));
         manage_pp_btn_->setCursor(Qt::PointingHandCursor);
         manage_pp_btn_->setFixedHeight(40);
         manage_pp_btn_->setProperty("cssClass", QStringLiteral("outline"));
@@ -156,41 +159,58 @@ void SettingsView::build_ui() {
         right_layout->addWidget(pp_badge_);
         right_layout->addWidget(manage_pp_btn_);
         // pp_desc_ 通过 out_desc 回传，供 refresh_password_badge 动态更新文本
-        add_row(section_layout, QStringLiteral("程序密码"),
-                QStringLiteral("未启用 · 保险库明文存储"), right_row, &pp_desc_);
+        add_row(section_layout, tr("程序密码"),
+                tr("未启用 · 保险库明文存储"), right_row, &pp_desc_);
 
-        // 自动锁定行（占位，下拉不接业务逻辑）
+        // 自动锁定行：item data 携带实际分钟数（0 = 不自动锁定）
         autolock_combo_ = new QComboBox(section);
         autolock_combo_->setObjectName(QStringLiteral("settingsAutolock"));
-        autolock_combo_->addItem(QStringLiteral("不自动锁定"));
-        autolock_combo_->addItem(QStringLiteral("1 分钟"));
-        autolock_combo_->addItem(QStringLiteral("5 分钟"));
-        autolock_combo_->addItem(QStringLiteral("15 分钟"));
-        autolock_combo_->addItem(QStringLiteral("30 分钟"));
+        autolock_combo_->addItem(tr("不自动锁定"), QVariant(0));
+        autolock_combo_->addItem(tr("1 分钟"), QVariant(1));
+        autolock_combo_->addItem(tr("5 分钟"), QVariant(5));
+        autolock_combo_->addItem(tr("15 分钟"), QVariant(15));
+        autolock_combo_->addItem(tr("30 分钟"), QVariant(30));
         autolock_combo_->setCurrentIndex(2);
         autolock_combo_->setFixedHeight(40);
         autolock_combo_->setMinimumWidth(120);
-        add_row(section_layout, QStringLiteral("自动锁定"),
-                QStringLiteral("空闲后自动锁定保险库"), autolock_combo_);
+        // 从 QSettings 读取持久化值，找到对应 item 设为当前项。
+        // 用 QSignalBlocker 防止初始 set 期间触发 currentIndexChanged。
+        {
+            QSettings settings(QStringLiteral("PwdVault"),
+                               QStringLiteral("Settings"));
+            const int persisted = settings.value(
+                QStringLiteral("autolock_minutes"), 5).toInt();
+            int target = 2;  // 默认 5 分钟
+            for (int i = 0; i < autolock_combo_->count(); ++i) {
+                if (autolock_combo_->itemData(i).toInt() == persisted) {
+                    target = i;
+                    break;
+                }
+            }
+            QSignalBlocker blocker(autolock_combo_);
+            autolock_combo_->setCurrentIndex(target);
+        }
+        add_row(section_layout, tr("自动锁定"),
+                tr("空闲后自动锁定保险库"), autolock_combo_);
     }
 
     // ── 外观 section ──
     {
         auto* section = make_section(QStringLiteral(":/icons/palette.svg"),
-                                     QStringLiteral("外观"), false, center_container);
+                                     tr("外观"), false, center_container);
         center_layout->addWidget(section);
         auto* section_layout = qobject_cast<QVBoxLayout*>(section->layout());
         auto* seg = build_theme_segmented();
         seg->setParent(section);
-        add_row(section_layout, QStringLiteral("主题"),
-                QStringLiteral("切换深色 / 浅色模式"), seg);
+        add_row(section_layout, tr("主题"),
+                tr("切换深色 / 浅色模式"), seg);
     }
 
     // ── 生成器 section ──
     {
         auto* section = make_section(QStringLiteral(":/icons/wand-2.svg"),
-                                     QStringLiteral("生成器"), false, center_container,
-                                     QColor(QStringLiteral("#3B6BFF")));
+                                     tr("生成器"), false, center_container,
+                                     icon_color(IconRole::Info));
         center_layout->addWidget(section);
         auto* section_layout = qobject_cast<QVBoxLayout*>(section->layout());
 
@@ -198,33 +218,33 @@ void SettingsView::build_ui() {
         view_history_btn_ = new QPushButton(section);
         view_history_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/clock.svg"), IconRole::Normal));
         view_history_btn_->setIconSize(QSize(16, 16));
-        view_history_btn_->setText(QStringLiteral("查看记录"));
+        view_history_btn_->setText(tr("查看记录"));
         view_history_btn_->setCursor(Qt::PointingHandCursor);
         view_history_btn_->setFixedHeight(40);
         view_history_btn_->setProperty("cssClass", QStringLiteral("outline"));
-        add_row(section_layout, QStringLiteral("密码生成记录"),
-                QStringLiteral("加载中…"), view_history_btn_, &gen_history_desc_);
+        add_row(section_layout, tr("密码生成记录"),
+                tr("加载中…"), view_history_btn_, &gen_history_desc_);
 
         // 上限下拉：item data 携带实际数值（0 = 无限制）
         gen_limit_combo_ = new QComboBox(section);
         gen_limit_combo_->setObjectName(QStringLiteral("settingsGenLimit"));
-        gen_limit_combo_->addItem(QStringLiteral("无限制"), QVariant(0));
-        gen_limit_combo_->addItem(QStringLiteral("10 条"), QVariant(10));
-        gen_limit_combo_->addItem(QStringLiteral("20 条"), QVariant(20));
-        gen_limit_combo_->addItem(QStringLiteral("50 条"), QVariant(50));
-        gen_limit_combo_->addItem(QStringLiteral("100 条"), QVariant(100));
-        gen_limit_combo_->addItem(QStringLiteral("200 条"), QVariant(200));
+        gen_limit_combo_->addItem(tr("无限制"), QVariant(0));
+        gen_limit_combo_->addItem(tr("10 条"), QVariant(10));
+        gen_limit_combo_->addItem(tr("20 条"), QVariant(20));
+        gen_limit_combo_->addItem(tr("50 条"), QVariant(50));
+        gen_limit_combo_->addItem(tr("100 条"), QVariant(100));
+        gen_limit_combo_->addItem(tr("200 条"), QVariant(200));
         gen_limit_combo_->setCurrentIndex(0);
         gen_limit_combo_->setFixedHeight(40);
         gen_limit_combo_->setMinimumWidth(120);
-        add_row(section_layout, QStringLiteral("记录上限"),
-                QStringLiteral("保留最近 N 条生成记录，超出自动清理"), gen_limit_combo_);
+        add_row(section_layout, tr("记录上限"),
+                tr("保留最近 N 条生成记录，超出自动清理"), gen_limit_combo_);
     }
 
     // ── 存储 section ──
     {
         auto* section = make_section(QStringLiteral(":/icons/database.svg"),
-                                     QStringLiteral("存储"), false, center_container);
+                                     tr("存储"), false, center_container);
         center_layout->addWidget(section);
         auto* section_layout = qobject_cast<QVBoxLayout*>(section->layout());
         // 存储路径行
@@ -236,7 +256,7 @@ void SettingsView::build_ui() {
         open_storage_btn_ = new QPushButton(section);
         open_storage_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/folder-open.svg"), IconRole::Normal));
         open_storage_btn_->setIconSize(QSize(16, 16));
-        open_storage_btn_->setText(QStringLiteral("打开"));
+        open_storage_btn_->setText(tr("打开"));
         open_storage_btn_->setCursor(Qt::PointingHandCursor);
         open_storage_btn_->setFixedHeight(40);
         open_storage_btn_->setProperty("cssClass", QStringLiteral("outline"));
@@ -247,70 +267,70 @@ void SettingsView::build_ui() {
         right_layout1->setSpacing(8);
         right_layout1->addWidget(storage_path_label_);
         right_layout1->addWidget(open_storage_btn_);
-        add_row(section_layout, QStringLiteral("存储路径"),
-                QStringLiteral("保险库数据文件位置"), right_row1);
+        add_row(section_layout, tr("存储路径"),
+                tr("保险库数据文件位置"), right_row1);
 
         // 条目数量行
         entry_count_label_ = new QLabel(QStringLiteral("-"), section);
         entry_count_label_->setProperty("cssClass", QStringLiteral("fieldLabel"));
-        add_row(section_layout, QStringLiteral("条目数量"),
-                QStringLiteral("已保存的密码记录"), entry_count_label_);
+        add_row(section_layout, tr("条目数量"),
+                tr("已保存的密码记录"), entry_count_label_);
     }
 
     // ── 关于 section ──
     {
         auto* section = make_section(QStringLiteral(":/icons/info.svg"),
-                                     QStringLiteral("关于"), false, center_container);
+                                     tr("关于"), false, center_container);
         center_layout->addWidget(section);
         auto* section_layout = qobject_cast<QVBoxLayout*>(section->layout());
         version_value_ = new QLabel(
-            QStringLiteral("v%1").arg(QString::fromLatin1(kAppVersion)), section);
+            tr("v%1").arg(QString::fromLatin1(kAppVersion)), section);
         version_value_->setProperty("cssClass", QStringLiteral("fieldLabel"));
-        add_row(section_layout, QStringLiteral("版本"),
-                QStringLiteral("PwdVault"), version_value_);
+        add_row(section_layout, tr("版本"),
+                tr("PwdVault"), version_value_);
 
-        auto* enc_value = new QLabel(QStringLiteral("AES-256-GCM · Argon2id"), section);
+        auto* enc_value = new QLabel(tr("AES-256-GCM · Argon2id"), section);
         enc_value->setProperty("cssClass", QStringLiteral("fieldLabel"));
-        add_row(section_layout, QStringLiteral("加密方案"),
-                QStringLiteral("数据加密与密钥派生"), enc_value);
+        add_row(section_layout, tr("加密方案"),
+                tr("数据加密与密钥派生"), enc_value);
 
         license_btn_ = new QPushButton(section);
         license_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/external-link.svg"), IconRole::Normal));
         license_btn_->setIconSize(QSize(16, 16));
-        license_btn_->setText(QStringLiteral("查看"));
+        license_btn_->setText(tr("查看"));
         license_btn_->setCursor(Qt::PointingHandCursor);
         license_btn_->setFixedHeight(40);
         license_btn_->setProperty("cssClass", QStringLiteral("outline"));
-        add_row(section_layout, QStringLiteral("开源许可"),
-                QStringLiteral("MIT License"), license_btn_);
+        add_row(section_layout, tr("开源许可"),
+                tr("MIT License"), license_btn_);
 
         github_btn_ = new QPushButton(section);
         github_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/github.svg"), IconRole::Normal));
         github_btn_->setIconSize(QSize(16, 16));
-        github_btn_->setText(QStringLiteral("GitHub"));
+        github_btn_->setText(tr("GitHub"));
         github_btn_->setCursor(Qt::PointingHandCursor);
         github_btn_->setFixedHeight(40);
         github_btn_->setProperty("cssClass", QStringLiteral("outline"));
-        add_row(section_layout, QStringLiteral("项目主页"),
-                QStringLiteral("源代码与问题反馈"), github_btn_);
+        add_row(section_layout, tr("项目主页"),
+                tr("源代码与问题反馈"), github_btn_);
     }
 
     // ── 危险操作 section ──
     {
         auto* section = make_section(QStringLiteral(":/icons/shield-off.svg"),
-                                     QStringLiteral("危险操作"),
+                                     tr("危险操作"),
                                      /*danger=*/true, center_container);
         center_layout->addWidget(section);
         auto* section_layout = qobject_cast<QVBoxLayout*>(section->layout());
         lock_now_btn_ = new QPushButton(section);
         lock_now_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/lock.svg"), IconRole::Danger));
         lock_now_btn_->setIconSize(QSize(16, 16));
-        lock_now_btn_->setText(QStringLiteral("立即锁定"));
+        lock_now_btn_->setText(tr("立即锁定"));
         lock_now_btn_->setCursor(Qt::PointingHandCursor);
         lock_now_btn_->setFixedHeight(40);
         lock_now_btn_->setProperty("cssClass", QStringLiteral("danger"));
-        add_row(section_layout, QStringLiteral("锁定保险库"),
-                QStringLiteral("立即锁定，需重新输入程序密码"), lock_now_btn_);
+        add_row(section_layout, tr("锁定保险库"),
+                tr("立即锁定，需重新输入程序密码"), lock_now_btn_);
     }
 
     // content 不再设 maxWidth：由 center_container->setMaximumWidth(720)
@@ -332,6 +352,8 @@ void SettingsView::build_ui() {
             this, &SettingsView::on_view_generator_history_clicked);
     connect(gen_limit_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SettingsView::on_generator_limit_changed);
+    connect(autolock_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &SettingsView::on_autolock_changed);
 }
 
 QFrame* SettingsView::make_section(const QString& icon_resource,
@@ -353,9 +375,10 @@ QFrame* SettingsView::make_section(const QString& icon_resource,
     header_layout->setSpacing(10);
     auto* icon_lbl = new QLabel(section);
     // 图标颜色优先级：调用方显式传入 > danger 红 > 品牌蓝
+    // 注意：参数名 icon_color 遮蔽了同名的全局函数，调用需全限定
     QColor clr = icon_color.isValid() ? icon_color
-        : (danger ? QColor(QStringLiteral("#f56363"))
-                  : QColor(QStringLiteral("#3B6BFF")));
+        : (danger ? pwdvault::ui::icon_color(IconRole::Danger)
+                  : pwdvault::ui::icon_color(IconRole::Info));
     icon_lbl->setPixmap(tinted_pixmap(icon_resource, clr, QSize(18, 18)));
     icon_lbl->setProperty("cssClass", QStringLiteral("inlineIcon"));
     header_layout->addWidget(icon_lbl);
@@ -423,9 +446,9 @@ QFrame* SettingsView::build_theme_segmented() {
         return btn;
     };
 
-    theme_light_btn_ = make_btn(QStringLiteral("浅色"), frame);
-    theme_dark_btn_ = make_btn(QStringLiteral("深色"), frame);
-    theme_system_btn_ = make_btn(QStringLiteral("跟随系统"), frame);
+    theme_light_btn_ = make_btn(tr("浅色"), frame);
+    theme_dark_btn_ = make_btn(tr("深色"), frame);
+    theme_system_btn_ = make_btn(tr("跟随系统"), frame);
 
     theme_group_->addButton(theme_light_btn_, 0);
     theme_group_->addButton(theme_dark_btn_, 1);
@@ -454,13 +477,13 @@ void SettingsView::sync_theme_segment() {
 void SettingsView::refresh_password_badge() {
     if (!pp_badge_) return;
     if (password_enabled_) {
-        pp_badge_->setText(QStringLiteral("已启用"));
+        pp_badge_->setText(tr("已启用"));
         pp_badge_->setProperty("cssClass", QStringLiteral("badgeSuccess"));
-        if (pp_desc_) pp_desc_->setText(QStringLiteral("已启用 · 保险库加密存储"));
+        if (pp_desc_) pp_desc_->setText(tr("已启用 · 保险库加密存储"));
     } else {
-        pp_badge_->setText(QStringLiteral("未启用"));
+        pp_badge_->setText(tr("未启用"));
         pp_badge_->setProperty("cssClass", QStringLiteral("badge"));
-        if (pp_desc_) pp_desc_->setText(QStringLiteral("未启用 · 保险库明文存储"));
+        if (pp_desc_) pp_desc_->setText(tr("未启用 · 保险库明文存储"));
     }
     // 明文模式（未启用程序密码）下隐藏「立即锁定」按钮：
     // 无加密即无可锁，按钮可见会让用户误操作后报错。
@@ -479,7 +502,7 @@ void SettingsView::refresh_entry_count() {
     auto result = client_->list_entries();
     if (result.ok()) {
         entry_count_label_->setText(
-            QStringLiteral("%1 条").arg(result.value().entries.size()));
+            tr("%1 条").arg(result.value().entries.size()));
     } else {
         entry_count_label_->setText(QStringLiteral("-"));
     }
@@ -491,38 +514,57 @@ void SettingsView::refresh_generator_settings() {
         return;
     }
 
-    // 历史记录条数
-    auto list_result = client_->list_generated_records();
-    if (gen_history_desc_) {
-        if (list_result.ok()) {
-            const int n = static_cast<int>(list_result.value().records.size());
-            gen_history_desc_->setText(
-                n == 0 ? QStringLiteral("暂无记录")
-                       : QStringLiteral("已保存 %1 条记录").arg(n));
-        } else {
-            gen_history_desc_->setText(QStringLiteral("-"));
-        }
-    }
-
-    // 上限下拉：以 service 端持久化的值为准
-    auto settings_result = client_->get_generator_settings();
-    if (!settings_result.ok()) return;
-    const int32_t limit = settings_result.value().history_limit;
-    // 找到与 limit 匹配的项；无匹配时（数值不在候选中）回退到「无限制」
-    int target_index = 0;
-    if (gen_limit_combo_) {
-        gen_limit_syncing_ = true;
-        for (int i = 0; i < gen_limit_combo_->count(); ++i) {
-            const int v = gen_limit_combo_->itemData(i).toInt();
-            if (v == limit) {
-                target_index = i;
-                break;
+    // 历史记录条数（异步）
+    loading_history_ = true;
+    auto* list_watcher = new QFutureWatcher<core::Result<protocol::ListGeneratedRecordsResponse>>(this);
+    connect(list_watcher, &QFutureWatcher<core::Result<protocol::ListGeneratedRecordsResponse>>::finished,
+            this, [this, list_watcher]() {
+        loading_history_ = false;
+        auto result = list_watcher->result();
+        if (gen_history_desc_) {
+            if (result.ok()) {
+                const int n = static_cast<int>(result.value().records.size());
+                gen_history_desc_->setText(
+                    n == 0 ? tr("暂无记录")
+                           : tr("已保存 %1 条记录").arg(n));
+            } else {
+                gen_history_desc_->setText(QStringLiteral("-"));
             }
         }
-        QSignalBlocker blocker(gen_limit_combo_);
-        gen_limit_combo_->setCurrentIndex(target_index);
-        gen_limit_syncing_ = false;
-    }
+        list_watcher->deleteLater();
+    });
+    list_watcher->setFuture(client_->list_generated_records_async());
+
+    // 上限下拉：以 service 端持久化的值为准（异步）
+    loading_settings_ = true;
+    auto* settings_watcher = new QFutureWatcher<core::Result<protocol::GetGeneratorSettingsResponse>>(this);
+    connect(settings_watcher, &QFutureWatcher<core::Result<protocol::GetGeneratorSettingsResponse>>::finished,
+            this, [this, settings_watcher]() {
+        loading_settings_ = false;
+        auto result = settings_watcher->result();
+        if (!result.ok()) {
+            settings_watcher->deleteLater();
+            return;
+        }
+        const int32_t limit = result.value().history_limit;
+        // 找到与 limit 匹配的项；无匹配时（数值不在候选中）回退到「无限制」
+        int target_index = 0;
+        if (gen_limit_combo_) {
+            gen_limit_syncing_ = true;
+            for (int i = 0; i < gen_limit_combo_->count(); ++i) {
+                const int v = gen_limit_combo_->itemData(i).toInt();
+                if (v == limit) {
+                    target_index = i;
+                    break;
+                }
+            }
+            QSignalBlocker blocker(gen_limit_combo_);
+            gen_limit_combo_->setCurrentIndex(target_index);
+            gen_limit_syncing_ = false;
+        }
+        settings_watcher->deleteLater();
+    });
+    settings_watcher->setFuture(client_->get_generator_settings_async());
 }
 
 // ---------------------------------------------------------------------------
@@ -574,8 +616,8 @@ void SettingsView::on_open_storage_clicked() {
     const QString path = data_storage_path();
     const QUrl url = QUrl::fromLocalFile(path);
     if (!QDesktopServices::openUrl(url)) {
-        QMessageBox::warning(this, QStringLiteral("打开失败"),
-            QStringLiteral("无法打开存储目录：%1").arg(path));
+        QMessageBox::warning(this, tr("打开失败"),
+            tr("无法打开存储目录：%1").arg(path));
     }
 }
 
@@ -594,9 +636,9 @@ void SettingsView::on_lock_now_clicked() {
         emit lock_requested();
     } else {
         const QString msg = QString::fromStdString(result.error().what());
-        QMessageBox::warning(this, QStringLiteral("锁定失败"),
-            msg.isEmpty() ? QStringLiteral("锁定密码库失败。")
-                          : QStringLiteral("锁定失败：%1").arg(msg));
+        QMessageBox::warning(this, tr("锁定失败"),
+            msg.isEmpty() ? tr("锁定密码库失败。")
+                          : tr("锁定失败：%1").arg(msg));
     }
 }
 
@@ -612,45 +654,81 @@ void SettingsView::on_theme_segment_clicked(int idx) {
 void SettingsView::on_view_generator_history_clicked() {
     if (!client_) return;
     auto* dlg = new GeneratorHistoryDialog(client_, this);
+    // 空状态「去生成密码」→ 中转给 MainWindow 切换到 GeneratorView
+    connect(dlg, &GeneratorHistoryDialog::generate_requested,
+            this, &SettingsView::generate_requested);
     // 关闭后自动清理 + 刷新本页「已保存 N 条记录」描述
     connect(dlg, &QDialog::finished, this, [this]() {
-        // 重新查 service：可能用户在弹窗里删除/清空了记录
-        if (client_) {
-            auto list_result = client_->list_generated_records();
+        if (!client_) return;
+        // 重新查 service：可能用户在弹窗里删除/清空了记录（异步）
+        auto* watcher = new QFutureWatcher<core::Result<protocol::ListGeneratedRecordsResponse>>(this);
+        connect(watcher, &QFutureWatcher<core::Result<protocol::ListGeneratedRecordsResponse>>::finished,
+                this, [this, watcher]() {
+            auto list_result = watcher->result();
             if (gen_history_desc_ && list_result.ok()) {
                 const int n = static_cast<int>(list_result.value().records.size());
                 gen_history_desc_->setText(
-                    n == 0 ? QStringLiteral("暂无记录")
-                           : QStringLiteral("已保存 %1 条记录").arg(n));
+                    n == 0 ? tr("暂无记录")
+                           : tr("已保存 %1 条记录").arg(n));
             }
-        }
+            watcher->deleteLater();
+        });
+        watcher->setFuture(client_->list_generated_records_async());
     });
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->show();
 }
 
 void SettingsView::on_generator_limit_changed(int index) {
-    if (gen_limit_syncing_) return;
+    if (gen_limit_syncing_ || loading_settings_) return;
     if (!client_ || !gen_limit_combo_) return;
     if (index < 0) return;
     const int limit = gen_limit_combo_->itemData(index).toInt();
-    auto result = client_->set_generator_limit(static_cast<int32_t>(limit));
-    if (!result.ok()) {
-        QMessageBox::warning(this, QStringLiteral("设置失败"),
-            QString::fromStdString(result.error().what()));
-        // 失败时回退下拉到 service 端实际值
-        refresh_generator_settings();
-    }
-    // 成功时同步刷新历史记录条数描述（清理可能减少记录数）
-    if (gen_history_desc_ && limit > 0) {
-        auto list_result = client_->list_generated_records();
-        if (list_result.ok()) {
-            const int n = static_cast<int>(list_result.value().records.size());
-            gen_history_desc_->setText(
-                n == 0 ? QStringLiteral("暂无记录")
-                       : QStringLiteral("已保存 %1 条记录").arg(n));
+
+    auto* watcher = new QFutureWatcher<core::Result<protocol::SetGeneratorLimitResponse>>(this);
+    connect(watcher, &QFutureWatcher<core::Result<protocol::SetGeneratorLimitResponse>>::finished,
+            this, [this, watcher, limit]() {
+        auto result = watcher->result();
+        if (!result.ok()) {
+            Toast::show(this, friendly_message(result.error()));
+            // 失败时回退下拉到 service 端实际值
+            refresh_generator_settings();
+        } else if (gen_history_desc_ && limit > 0) {
+            // 成功时刷新历史记录条数描述（清理可能减少记录数，异步）
+            auto* list_watcher = new QFutureWatcher<core::Result<protocol::ListGeneratedRecordsResponse>>(this);
+            connect(list_watcher, &QFutureWatcher<core::Result<protocol::ListGeneratedRecordsResponse>>::finished,
+                    this, [this, list_watcher]() {
+                auto list_result = list_watcher->result();
+                if (gen_history_desc_ && list_result.ok()) {
+                    const int n = static_cast<int>(list_result.value().records.size());
+                    gen_history_desc_->setText(
+                        n == 0 ? tr("暂无记录")
+                               : tr("已保存 %1 条记录").arg(n));
+                }
+                list_watcher->deleteLater();
+            });
+            list_watcher->setFuture(client_->list_generated_records_async());
         }
-    }
+        watcher->deleteLater();
+    });
+    watcher->setFuture(client_->set_generator_limit_async(static_cast<int32_t>(limit)));
+}
+
+int SettingsView::get_autolock_minutes() const {
+    if (!autolock_combo_) return 0;
+    const int idx = autolock_combo_->currentIndex();
+    if (idx < 0) return 0;
+    return autolock_combo_->itemData(idx).toInt();
+}
+
+void SettingsView::on_autolock_changed(int index) {
+    if (!autolock_combo_ || index < 0) return;
+    const int minutes = autolock_combo_->itemData(index).toInt();
+    // 持久化用户选择：MainWindow::setup_autolock 也会写一份，双写无害
+    // （键值相同，确保即使 MainWindow 未连接也能保存）。
+    QSettings settings(QStringLiteral("PwdVault"), QStringLiteral("Settings"));
+    settings.setValue(QStringLiteral("autolock_minutes"), minutes);
+    emit autolock_changed(minutes);
 }
 
 }  // namespace pwdvault::ui

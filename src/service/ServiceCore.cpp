@@ -360,9 +360,14 @@ core::ByteVec ServiceCore::handle_unlock(core::ByteSpan payload) {
     }
 
     if (is_in_cooldown()) {
+        // 计算冷却剩余秒数，写入 error_message 供 UI 解析倒计时
+        auto remaining_sec = std::chrono::duration_cast<std::chrono::seconds>(
+            lock_until_ - std::chrono::steady_clock::now()).count();
+        if (remaining_sec < 0) remaining_sec = 0;
         protocol::UnlockResponse resp;
         resp.success = false;
-        resp.error_message = "too many failed attempts, please wait";
+        resp.error_message = "已锁定，请 " + std::to_string(remaining_sec) +
+                             " 秒后重试";
         return protocol::serialize(resp);
     }
 
@@ -370,11 +375,22 @@ core::ByteVec ServiceCore::handle_unlock(core::ByteSpan payload) {
     if (!unlock_result) {
         ++login_attempts_;
         if (login_attempts_ >= kMaxLoginAttempts) {
+            // 刚触发锁定：返回完整锁定提示（含锁定总时长），UI 进入倒计时
             lock_until_ = std::chrono::steady_clock::now() + kLockoutDuration;
+            auto lockout_sec = std::chrono::duration_cast<std::chrono::seconds>(
+                kLockoutDuration).count();
+            protocol::UnlockResponse resp;
+            resp.success = false;
+            resp.error_message = "密码错误次数过多，已锁定，请 " +
+                                 std::to_string(lockout_sec) + " 秒后重试";
+            return protocol::serialize(resp);
         }
+        // 普通失败：返回剩余尝试次数，UI 同步显示
+        const int remaining = kMaxLoginAttempts - login_attempts_;
         protocol::UnlockResponse resp;
         resp.success = false;
-        resp.error_message = unlock_result.error().what();
+        resp.error_message = "密码错误，剩余 " + std::to_string(remaining) +
+                             " 次尝试";
         return protocol::serialize(resp);
     }
 

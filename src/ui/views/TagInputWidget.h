@@ -47,6 +47,9 @@ signals:
 private slots:
     void on_return_pressed();
 
+protected:
+    bool eventFilter(QObject* obj, QEvent* event) override;
+
 private:
     void rebuild_chips();
     void add_tag_by_name(const QString& name);

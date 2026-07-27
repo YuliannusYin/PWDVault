@@ -13,8 +13,11 @@
 // =============================================================================
 #pragma once
 
+#include <QHash>
+#include <QString>
 #include <QWidget>
 
+#include <cstdint>
 #include <vector>
 
 #include "Types.h"
@@ -22,17 +25,20 @@
 class QComboBox;
 class QLabel;
 class QLineEdit;
-class QListWidget;
-class QListWidgetItem;
+class QListView;
+class QModelIndex;
 class QPushButton;
 class QScrollArea;
 class QTextBrowser;
+class QTimer;
 class QWidget;
 
 namespace pwdvault::ui {
 
 class FlowLayout;
 class IpcClient;
+class PasswordBookDelegate;
+class PasswordBookModel;
 
 class PasswordBookView : public QWidget {
     Q_OBJECT
@@ -43,6 +49,12 @@ public:
     /// 重新加载列表（调用 list_entries）。
     void refresh();
 
+    /// 把焦点设置到搜索框（供全局快捷键 Ctrl+F 调用）。
+    void focus_search();
+
+    /// 把焦点设置到左侧列表（供 MainWindow 视图切换后键盘导航调用）。
+    void focus_list();
+
 signals:
     /// 编辑条目时触发，MainWindow 可用于切换视图或刷新。
     void entry_updated(int64_t id);
@@ -50,11 +62,14 @@ signals:
     /// 条目数量变化时触发，MainWindow 用于更新顶栏 badge。
     void entry_count_changed(int count);
 
+    /// 用户在空状态点击「新建条目」时触发，MainWindow 切换到 InputView。
+    void entry_add_requested();
+
 private slots:
     void on_search_clicked();
     void on_refresh_clicked();
     void on_search_text_changed(const QString& text);
-    void on_list_item_changed(QListWidgetItem* current, QListWidgetItem* previous);
+    void on_list_current_changed(const QModelIndex& current, const QModelIndex& previous);
     void on_copy_account_clicked();
     void on_copy_password_clicked();
     void on_toggle_password_clicked();
@@ -71,10 +86,28 @@ private:
     const core::PasswordEntry* current_entry() const;
     void show_empty_state(const QString& message);
 
+    // 异步 IPC 与 UI 辅助
+    void begin_loading(const QString& message);
+    void end_loading();
+    void refresh_async();
+    void search_async(const QString& text, const QString& field);
+    void clear_note_cache_for(int64_t id);
+    void clear_all_note_cache();
+
     IpcClient* client_;
     std::vector<core::PasswordEntry> entries_;
     int64_t current_id_ = 0;
     bool password_visible_ = false;
+
+    // 增量搜索 debounce
+    QTimer* search_timer_ = nullptr;
+    QString pending_search_text_;
+
+    // Markdown 渲染缓存（entry.id → html）
+    QHash<int64_t, QString> note_cache_;
+
+    // 加载中占位提示（复用 empty_hint_，仅作语义别名指针）
+    QLabel* loading_hint_ = nullptr;
 
     // 顶部搜索行
     QLineEdit* search_edit_ = nullptr;
@@ -82,7 +115,9 @@ private:
     QPushButton* refresh_button_ = nullptr;
 
     // 左侧列表
-    QListWidget* list_ = nullptr;
+    QListView* list_ = nullptr;
+    PasswordBookModel* model_ = nullptr;
+    PasswordBookDelegate* delegate_ = nullptr;
 
     // 右侧详情
     QScrollArea* detail_scroll_ = nullptr;
@@ -116,6 +151,7 @@ private:
 
     // 空状态提示
     QLabel* empty_hint_ = nullptr;
+    QPushButton* empty_add_button_ = nullptr;  ///< 空状态引导按钮
 };
 
 }  // namespace pwdvault::ui

@@ -3,10 +3,12 @@
 // IpcClient.cpp
 //
 // PwdVault UI 进程 IPC 客户端实现。基于 Windows 命名管道：
-//   - connect_to_service: 用 CreateFileW 打开 \\\\.\pipe\PwdVaultService
+//   - connect_to_service: 用 CreateFileW 打开 \\.\pipe\PwdVaultService
 //   - read_all / write_all: 用 overlapped I/O + WaitForSingleObject 实现 10 秒超时
 //   - 重试: connect 失败时重试 3 次，间隔 500ms（QThread::msleep）
 //   - RAII: ScopedHandle 包装事件句柄；管道句柄在析构/disconnect 中释放
+//   - 异步: send_request_async 模板用 QtConcurrent::run 在线程池上跑同步
+//     send_request；pipe_mutex_ 串行化所有请求避免管道帧错乱
 // =============================================================================
 #include "IpcClient.h"
 
@@ -455,6 +457,200 @@ core::Result<protocol::SetEntryTagsResponse> IpcClient::set_entry_tags(int64_t e
     req.entry_id = entry_id;
     req.tag_ids = tag_ids;
     return send_request<protocol::SetEntryTagsRequest, protocol::SetEntryTagsResponse>(
+        protocol::CommandId::SetEntryTags, req);
+}
+
+// ---------------------------------------------------------------------------
+// 异步 IPC 命令实现（每个返回 QFuture，调用方用 QFutureWatcher 接收结果）
+// ---------------------------------------------------------------------------
+
+QFuture<core::Result<protocol::PingResponse>> IpcClient::ping_async() {
+    return send_request_async<protocol::PingRequest, protocol::PingResponse>(
+        protocol::CommandId::Ping, protocol::PingRequest{});
+}
+
+QFuture<core::Result<protocol::UnlockResponse>> IpcClient::unlock_async(const std::string& password) {
+    protocol::UnlockRequest req;
+    req.password = password;
+    return send_request_async<protocol::UnlockRequest, protocol::UnlockResponse>(
+        protocol::CommandId::Unlock, req);
+}
+
+QFuture<core::Result<protocol::LockResponse>> IpcClient::lock_async() {
+    return send_request_async<protocol::LockRequest, protocol::LockResponse>(
+        protocol::CommandId::Lock, protocol::LockRequest{});
+}
+
+QFuture<core::Result<protocol::EnableProgramPasswordResponse>> IpcClient::enable_program_password_async(const std::string& password) {
+    protocol::EnableProgramPasswordRequest req;
+    req.password = password;
+    return send_request_async<protocol::EnableProgramPasswordRequest, protocol::EnableProgramPasswordResponse>(
+        protocol::CommandId::EnableProgramPassword, req);
+}
+
+QFuture<core::Result<protocol::DisableProgramPasswordResponse>> IpcClient::disable_program_password_async(const std::string& password) {
+    protocol::DisableProgramPasswordRequest req;
+    req.password = password;
+    return send_request_async<protocol::DisableProgramPasswordRequest, protocol::DisableProgramPasswordResponse>(
+        protocol::CommandId::DisableProgramPassword, req);
+}
+
+QFuture<core::Result<protocol::ChangeProgramPasswordResponse>> IpcClient::change_program_password_async(const std::string& old_password, const std::string& new_password) {
+    protocol::ChangeProgramPasswordRequest req;
+    req.old_password = old_password;
+    req.new_password = new_password;
+    return send_request_async<protocol::ChangeProgramPasswordRequest, protocol::ChangeProgramPasswordResponse>(
+        protocol::CommandId::ChangeProgramPassword, req);
+}
+
+QFuture<core::Result<protocol::GetVaultStatusResponse>> IpcClient::get_vault_status_async() {
+    return send_request_async<protocol::GetVaultStatusRequest, protocol::GetVaultStatusResponse>(
+        protocol::CommandId::GetVaultStatus, protocol::GetVaultStatusRequest{});
+}
+
+QFuture<core::Result<protocol::AddEntryResponse>> IpcClient::add_entry_async(const core::PasswordEntry& entry) {
+    protocol::AddEntryRequest req;
+    req.entry = entry;
+    return send_request_async<protocol::AddEntryRequest, protocol::AddEntryResponse>(
+        protocol::CommandId::AddEntry, req);
+}
+
+QFuture<core::Result<protocol::UpdateEntryResponse>> IpcClient::update_entry_async(const core::PasswordEntry& entry) {
+    protocol::UpdateEntryRequest req;
+    req.entry = entry;
+    return send_request_async<protocol::UpdateEntryRequest, protocol::UpdateEntryResponse>(
+        protocol::CommandId::UpdateEntry, req);
+}
+
+QFuture<core::Result<protocol::RemoveEntryResponse>> IpcClient::remove_entry_async(int64_t id) {
+    protocol::RemoveEntryRequest req;
+    req.id = id;
+    return send_request_async<protocol::RemoveEntryRequest, protocol::RemoveEntryResponse>(
+        protocol::CommandId::RemoveEntry, req);
+}
+
+QFuture<core::Result<protocol::GetEntryResponse>> IpcClient::get_entry_async(int64_t id) {
+    protocol::GetEntryRequest req;
+    req.id = id;
+    return send_request_async<protocol::GetEntryRequest, protocol::GetEntryResponse>(
+        protocol::CommandId::GetEntry, req);
+}
+
+QFuture<core::Result<protocol::SearchEntriesResponse>> IpcClient::search_entries_async(const core::SearchQuery& query) {
+    protocol::SearchEntriesRequest req;
+    req.query = query;
+    return send_request_async<protocol::SearchEntriesRequest, protocol::SearchEntriesResponse>(
+        protocol::CommandId::SearchEntries, req);
+}
+
+QFuture<core::Result<protocol::ListEntriesResponse>> IpcClient::list_entries_async() {
+    return send_request_async<protocol::ListEntriesRequest, protocol::ListEntriesResponse>(
+        protocol::CommandId::ListEntries, protocol::ListEntriesRequest{});
+}
+
+QFuture<core::Result<protocol::GeneratePasswordResponse>> IpcClient::generate_password_async(const core::PasswordGeneratorOptions& options) {
+    protocol::GeneratePasswordRequest req;
+    req.options = options;
+    return send_request_async<protocol::GeneratePasswordRequest, protocol::GeneratePasswordResponse>(
+        protocol::CommandId::GeneratePassword, req);
+}
+
+QFuture<core::Result<protocol::EstimateStrengthResponse>> IpcClient::estimate_strength_async(const std::string& password) {
+    protocol::EstimateStrengthRequest req;
+    req.password = password;
+    return send_request_async<protocol::EstimateStrengthRequest, protocol::EstimateStrengthResponse>(
+        protocol::CommandId::EstimateStrength, req);
+}
+
+// ---------------------------------------------------------------------------
+// 异步：生成器历史记录
+// ---------------------------------------------------------------------------
+
+QFuture<core::Result<protocol::ListGeneratedRecordsResponse>> IpcClient::list_generated_records_async() {
+    return send_request_async<protocol::ListGeneratedRecordsRequest, protocol::ListGeneratedRecordsResponse>(
+        protocol::CommandId::ListGeneratedRecords, protocol::ListGeneratedRecordsRequest{});
+}
+
+QFuture<core::Result<protocol::RemoveGeneratedRecordResponse>> IpcClient::remove_generated_record_async(int64_t id) {
+    protocol::RemoveGeneratedRecordRequest req;
+    req.id = id;
+    return send_request_async<protocol::RemoveGeneratedRecordRequest, protocol::RemoveGeneratedRecordResponse>(
+        protocol::CommandId::RemoveGeneratedRecord, req);
+}
+
+QFuture<core::Result<protocol::ClearGeneratedRecordsResponse>> IpcClient::clear_generated_records_async() {
+    return send_request_async<protocol::ClearGeneratedRecordsRequest, protocol::ClearGeneratedRecordsResponse>(
+        protocol::CommandId::ClearGeneratedRecords, protocol::ClearGeneratedRecordsRequest{});
+}
+
+QFuture<core::Result<protocol::GetGeneratorSettingsResponse>> IpcClient::get_generator_settings_async() {
+    return send_request_async<protocol::GetGeneratorSettingsRequest, protocol::GetGeneratorSettingsResponse>(
+        protocol::CommandId::GetGeneratorSettings, protocol::GetGeneratorSettingsRequest{});
+}
+
+QFuture<core::Result<protocol::SetGeneratorLimitResponse>> IpcClient::set_generator_limit_async(int32_t limit) {
+    protocol::SetGeneratorLimitRequest req;
+    req.limit = limit;
+    return send_request_async<protocol::SetGeneratorLimitRequest, protocol::SetGeneratorLimitResponse>(
+        protocol::CommandId::SetGeneratorLimit, req);
+}
+
+// ---------------------------------------------------------------------------
+// 异步：标签管理
+// ---------------------------------------------------------------------------
+
+QFuture<core::Result<protocol::AddTagResponse>> IpcClient::add_tag_async(const core::Tag& tag) {
+    protocol::AddTagRequest req;
+    req.tag = tag;
+    return send_request_async<protocol::AddTagRequest, protocol::AddTagResponse>(
+        protocol::CommandId::AddTag, req);
+}
+
+QFuture<core::Result<protocol::UpdateTagResponse>> IpcClient::update_tag_async(const core::Tag& tag) {
+    protocol::UpdateTagRequest req;
+    req.tag = tag;
+    return send_request_async<protocol::UpdateTagRequest, protocol::UpdateTagResponse>(
+        protocol::CommandId::UpdateTag, req);
+}
+
+QFuture<core::Result<protocol::RemoveTagResponse>> IpcClient::remove_tag_async(int64_t id) {
+    protocol::RemoveTagRequest req;
+    req.id = id;
+    return send_request_async<protocol::RemoveTagRequest, protocol::RemoveTagResponse>(
+        protocol::CommandId::RemoveTag, req);
+}
+
+QFuture<core::Result<protocol::ListTagsResponse>> IpcClient::list_tags_async() {
+    return send_request_async<protocol::ListTagsRequest, protocol::ListTagsResponse>(
+        protocol::CommandId::ListTags, protocol::ListTagsRequest{});
+}
+
+QFuture<core::Result<protocol::GetTagResponse>> IpcClient::get_tag_async(int64_t id) {
+    protocol::GetTagRequest req;
+    req.id = id;
+    return send_request_async<protocol::GetTagRequest, protocol::GetTagResponse>(
+        protocol::CommandId::GetTag, req);
+}
+
+QFuture<core::Result<protocol::FindTagByNameResponse>> IpcClient::find_tag_by_name_async(const std::string& name) {
+    protocol::FindTagByNameRequest req;
+    req.name = name;
+    return send_request_async<protocol::FindTagByNameRequest, protocol::FindTagByNameResponse>(
+        protocol::CommandId::FindTagByName, req);
+}
+
+QFuture<core::Result<protocol::GetEntryTagsResponse>> IpcClient::get_entry_tags_async(int64_t entry_id) {
+    protocol::GetEntryTagsRequest req;
+    req.entry_id = entry_id;
+    return send_request_async<protocol::GetEntryTagsRequest, protocol::GetEntryTagsResponse>(
+        protocol::CommandId::GetEntryTags, req);
+}
+
+QFuture<core::Result<protocol::SetEntryTagsResponse>> IpcClient::set_entry_tags_async(int64_t entry_id, const std::vector<int64_t>& tag_ids) {
+    protocol::SetEntryTagsRequest req;
+    req.entry_id = entry_id;
+    req.tag_ids = tag_ids;
+    return send_request_async<protocol::SetEntryTagsRequest, protocol::SetEntryTagsResponse>(
         protocol::CommandId::SetEntryTags, req);
 }
 

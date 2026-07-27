@@ -20,7 +20,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(PwdVault
-    VERSION 3.2.0
+    VERSION 3.3.0
     DESCRIPTION "PwdVault - 模仿火绒安全软件架构的密码管理器"
     LANGUAGES CXX
 )
