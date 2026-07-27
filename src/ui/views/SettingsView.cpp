@@ -16,6 +16,7 @@
 #include "Version.h"
 
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDir>
@@ -204,6 +205,22 @@ void SettingsView::build_ui() {
         seg->setParent(section);
         add_row(section_layout, tr("主题"),
                 tr("切换深色 / 浅色模式"), seg);
+
+        // 高对比度模式：独立开关，增强中性边框可见度
+        hc_checkbox_ = new QCheckBox(section);
+        hc_checkbox_->setChecked(Theme::is_high_contrast());
+        hc_checkbox_->setCursor(Qt::PointingHandCursor);
+        add_row(section_layout, tr("高对比度模式"),
+                tr("增强边框可见度，便于辨识控件轮廓"), hc_checkbox_);
+        connect(hc_checkbox_, &QCheckBox::toggled, this, [this](bool checked) {
+            Theme::set_high_contrast(checked);
+        });
+        if (auto* t = Theme::instance()) {
+            connect(t, &Theme::high_contrast_changed, this, [this](bool enabled) {
+                QSignalBlocker b(hc_checkbox_);
+                hc_checkbox_->setChecked(enabled);
+            });
+        }
     }
 
     // ── 生成器 section ──

@@ -67,7 +67,7 @@ protected:
 
 private slots:
     void on_nav_clicked(int row);
-    void on_theme_toggle();
+    void on_pin_clicked();
     void on_lock_clicked();
     void on_ipc_disconnected();
     void on_ipc_error(const QString& message);
@@ -131,6 +131,10 @@ private:
     /// 重新着色顶栏图标按钮（按当前主题）。
     void refresh_topbar_icons();
 
+    /// 应用窗口外缘边框颜色：高对比度开启时按主题模式设为亮蓝/纯黑，
+    /// 关闭时还原系统默认。Win11 用 DWMWA_BORDER_COLOR，Win10 静默退化。
+    void apply_window_border();
+
     /// 配置自动锁定：minutes > 0 时启动 / 重置倒计时；minutes == 0 时停止。
     /// 同时持久化到 QSettings（与 SettingsView::on_autolock_changed 双写）。
     /// 锁定状态（unlock_view_ 显示）下不会启动 timer，避免重复触发。
@@ -153,7 +157,7 @@ private:
     QLabel* topbar_title_ = nullptr;
     QLabel* topbar_subtitle_ = nullptr;
     QLabel* topbar_count_badge_ = nullptr;
-    QPushButton* theme_toggle_btn_ = nullptr;
+    QPushButton* pin_btn_ = nullptr;
     QPushButton* topbar_lock_btn_ = nullptr;
     QPushButton* minimize_btn_ = nullptr;     ///< 自定义最小化按钮
     QPushButton* close_btn_ = nullptr;        ///< 自定义关闭按钮（hover 红色背景）
@@ -176,6 +180,9 @@ private:
 
     // 标记生成器是否由 InputView 请求打开
     bool generator_from_input_ = false;
+
+    // 窗口置顶状态（pin 按钮切换）：true 时窗口浮于其他窗口之上
+    bool is_pinned_ = false;
 
     // 启动流程标记：构造函数末尾 start_initial_flow 期间为 true，
     // 异步回调进入后置 false。用于防止启动期间用户操作（保留扩展用）。
