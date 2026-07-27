@@ -414,7 +414,7 @@ TEST_F(E2EFlowTest, UnlockWithWrongPasswordFails) {
 }
 
 /// 连续 5 次错误密码后，第 6 次（即使使用正确密码）应进入冷却期并返回
-/// success=false 与 "too many failed attempts" 提示。
+/// success=false 与 "已锁定" 提示（含剩余秒数供 UI 解析）。
 TEST_F(E2EFlowTest, FiveFailedUnlocksTriggerCooldown) {
     enable_program_password();
     lock();
@@ -431,9 +431,12 @@ TEST_F(E2EFlowTest, FiveFailedUnlocksTriggerCooldown) {
     auto r = unlock(kTestProgramPassword);
     ASSERT_TRUE(r.ok()) << r.error().what();
     EXPECT_FALSE(r.value().success);
-    EXPECT_NE(r.value().error_message.find("too many failed attempts"),
+    EXPECT_NE(r.value().error_message.find("已锁定"),
               std::string::npos)
         << "应包含冷却提示，实际: " << r.value().error_message;
+    EXPECT_NE(r.value().error_message.find("秒后重试"),
+              std::string::npos)
+        << "应包含剩余秒数，实际: " << r.value().error_message;
 }
 
 // =============================================================================

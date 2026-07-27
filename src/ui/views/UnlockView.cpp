@@ -5,6 +5,7 @@
 // PwdVault 解锁视图实现（新设计）。380px 居中卡片 + 盾牌图标 + 可见性切换。
 // =============================================================================
 #include "UnlockView.h"
+#include "ErrorMessages.h"
 #include "IpcClient.h"
 #include "IconKit.h"
 
@@ -16,8 +17,10 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QString>
 #include <QStyle>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -30,7 +33,7 @@ UnlockView::UnlockView(IpcClient* client, QWidget* parent)
     setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
     setWindowModality(Qt::ApplicationModal);
     setAttribute(Qt::WA_TranslucentBackground);
-    setWindowTitle(QStringLiteral("PwdVault - 解锁"));
+    setWindowTitle(tr("PwdVault - 解锁"));
 
     // 自动覆盖父窗口大小
     if (parent) {
@@ -78,7 +81,7 @@ void UnlockView::build_ui() {
 
     // 副标题
     subtitle_label_ = new QLabel(
-        QStringLiteral("输入程序密码以解锁保险库"), card);
+        tr("输入程序密码以解锁保险库"), card);
     subtitle_label_->setAlignment(Qt::AlignCenter);
     subtitle_label_->setProperty("cssClass", QStringLiteral("muted"));
     card_layout->addWidget(subtitle_label_);
@@ -103,7 +106,7 @@ void UnlockView::build_ui() {
     // 输入框（透明背景，无边框，融入容器）
     password_edit_ = new QLineEdit(pwd_container);
     password_edit_->setEchoMode(QLineEdit::Password);
-    password_edit_->setPlaceholderText(QStringLiteral("程序密码"));
+    password_edit_->setPlaceholderText(tr("程序密码"));
     password_edit_->setProperty("cssClass", QStringLiteral("inlineEdit"));
     pwd_layout->addWidget(password_edit_, 1);
 
@@ -130,13 +133,13 @@ void UnlockView::build_ui() {
     hint_row->addWidget(hint_icon);
 
     auto* hint_text = new QLabel(
-        QStringLiteral("连续 5 次失败将锁定 5 分钟"), card);
+        tr("连续 5 次失败将锁定 5 分钟"), card);
     hint_text->setProperty("cssClass", QStringLiteral("caption"));
     hint_row->addWidget(hint_text);
     hint_row->addStretch(1);
 
     attempts_label_ = new QLabel(
-        QStringLiteral("剩余尝试 5/5"), card);
+        tr("剩余尝试 5/5"), card);
     attempts_label_->setProperty("cssClass", QStringLiteral("caption"));
     attempts_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     hint_row->addWidget(attempts_label_);
@@ -146,7 +149,7 @@ void UnlockView::build_ui() {
     submit_button_ = new QPushButton(card);
     submit_button_->setIcon(tinted_icon(QStringLiteral(":/icons/lock-open.svg"), IconRole::OnPrimary));
     submit_button_->setIconSize(QSize(18, 18));
-    submit_button_->setText(QStringLiteral("解锁"));
+    submit_button_->setText(tr("解锁"));
     submit_button_->setCursor(Qt::PointingHandCursor);
     submit_button_->setFixedHeight(40);
     submit_button_->setProperty("cssClass", QStringLiteral("primary"));
@@ -177,7 +180,7 @@ void UnlockView::build_ui() {
     footer_row->addWidget(footer_icon);
 
     auto* footer_text = new QLabel(
-        QStringLiteral("本地加密 · AES-256-GCM · Argon2id"), card);
+        tr("本地加密 · AES-256-GCM · Argon2id"), card);
     footer_text->setProperty("cssClass", QStringLiteral("caption"));
     footer_row->addWidget(footer_text);
     footer_row->addStretch(1);
@@ -195,6 +198,12 @@ void UnlockView::build_ui() {
             this, &UnlockView::on_submit_clicked);
     connect(password_edit_, &QLineEdit::textChanged,
             this, &UnlockView::on_password_changed);
+
+    // 冷却倒计时定时器：每秒 tick，由 start_cooldown 启动
+    cooldown_timer_ = new QTimer(this);
+    cooldown_timer_->setInterval(1000);
+    connect(cooldown_timer_, &QTimer::timeout,
+            this, &UnlockView::on_cooldown_tick);
 
     password_edit_->setFocus();
 }
@@ -238,13 +247,13 @@ void UnlockView::on_submit_clicked() {
     set_error(QString());
 
     if (!client_) {
-        set_error(QStringLiteral("内部错误：IPC 客户端不可用。"));
+        set_error(tr("内部错误：IPC 客户端不可用。"));
         return;
     }
 
     const std::string password = password_edit_->text().toStdString();
     if (password.empty()) {
-        set_error(QStringLiteral("程序密码不能为空。"));
+        set_error(tr("程序密码不能为空。"));
         return;
     }
 
@@ -253,23 +262,33 @@ void UnlockView::on_submit_clicked() {
         unlock_succeeded_ = true;
         emit unlock_succeeded();
     } else {
-        --remaining_attempts_;
-        update_attempts_display();
-
         QString msg;
         if (result.ok()) {
+            // service 已响应（通常为 Unauthorized）：保留 service 返回的具体 message
+            // （含"剩余 X 次尝试"/"请 X 秒后重试"等计数信息，由 parse_unlock_failure 解析）
             msg = QString::fromStdString(result.value().error_message);
         } else {
-            msg = QString::fromStdString(result.error().what());
+            // IPC 传输失败（IpcError/InternalError）：使用友好文案，技术细节进 qDebug
+            msg = friendly_message(result.error());
         }
-        set_error(msg.isEmpty()
-                      ? QStringLiteral("解锁失败，请检查程序密码。")
-                      : QStringLiteral("解锁失败：%1").arg(msg));
 
-        if (remaining_attempts_ <= 0) {
-            if (submit_button_) submit_button_->setEnabled(false);
-            set_error(QStringLiteral("尝试次数已用尽，请稍后再试。"));
+        // 优先从 service error_message 解析真实剩余次数 / 冷却秒数；
+        // 解析失败（IPC 错误或 message 无可识别格式）回退本地递减，保留原行为
+        const bool parsed = parse_unlock_failure(msg);
+        if (!parsed) {
+            --remaining_attempts_;
+            update_attempts_display();
+            if (remaining_attempts_ <= 0) {
+                if (submit_button_) submit_button_->setEnabled(false);
+                set_error(tr("尝试次数已用尽，请稍后再试。"));
+                password_edit_->clear();
+                return;
+            }
         }
+
+        set_error(msg.isEmpty()
+                      ? tr("解锁失败，请检查程序密码。")
+                      : tr("解锁失败：%1").arg(msg));
 
         password_edit_->clear();
         password_edit_->setFocus();
@@ -286,17 +305,83 @@ void UnlockView::set_error(const QString& message) {
 
 void UnlockView::update_attempts_display() {
     if (!attempts_label_) return;
-    if (remaining_attempts_ > 0) {
+    if (cooldown_remaining_seconds_ > 0) {
+        // 冷却态：显示倒计时秒数（红色 error 样式）
         attempts_label_->setText(
-            QStringLiteral("剩余尝试 %1/5").arg(remaining_attempts_));
+            tr("已锁定，请 %1 秒后重试")
+                .arg(cooldown_remaining_seconds_));
+        attempts_label_->setProperty("cssClass", QStringLiteral("error"));
+    } else if (remaining_attempts_ > 0) {
+        attempts_label_->setText(
+            tr("剩余尝试 %1/5").arg(remaining_attempts_));
         attempts_label_->setProperty("cssClass", QStringLiteral("caption"));
     } else {
-        attempts_label_->setText(QStringLiteral("已锁定"));
+        attempts_label_->setText(tr("已锁定"));
         attempts_label_->setProperty("cssClass", QStringLiteral("error"));
     }
     // 切换 dynamic property 后必须 unpolish + polish 才能让 QSS 重新生效
     attempts_label_->style()->unpolish(attempts_label_);
     attempts_label_->style()->polish(attempts_label_);
+}
+
+bool UnlockView::parse_unlock_failure(const QString& message) {
+    // 冷却格式优先：匹配 "请 N 秒后重试"
+    // （service 在 is_in_cooldown 命中与刚触发锁定两条路径均写入此子串）
+    static const QRegularExpression cooldown_re(
+        QStringLiteral("请 (\\d+) 秒后重试"));
+    const auto m1 = cooldown_re.match(message);
+    if (m1.hasMatch()) {
+        const int seconds = m1.captured(1).toInt();
+        if (seconds > 0) {
+            start_cooldown(seconds);
+        } else {
+            // service 报 0 秒：冷却刚结束，恢复初始剩余次数
+            remaining_attempts_ = 5;
+            update_attempts_display();
+        }
+        return true;
+    }
+
+    // 剩余次数格式：匹配 "剩余 N 次尝试"
+    static const QRegularExpression attempts_re(
+        QStringLiteral("剩余 (\\d+) 次尝试"));
+    const auto m2 = attempts_re.match(message);
+    if (m2.hasMatch()) {
+        remaining_attempts_ = m2.captured(1).toInt();
+        update_attempts_display();
+        return true;
+    }
+
+    return false;
+}
+
+void UnlockView::start_cooldown(int seconds) {
+    cooldown_remaining_seconds_ = seconds;
+    if (submit_button_) submit_button_->setEnabled(false);
+    if (password_edit_) password_edit_->setEnabled(false);
+    update_attempts_display();
+    if (cooldown_timer_ && !cooldown_timer_->isActive()) {
+        cooldown_timer_->start();
+    }
+}
+
+void UnlockView::on_cooldown_tick() {
+    if (cooldown_remaining_seconds_ > 0) {
+        --cooldown_remaining_seconds_;
+    }
+    if (cooldown_remaining_seconds_ <= 0) {
+        if (cooldown_timer_) cooldown_timer_->stop();
+        if (submit_button_) submit_button_->setEnabled(true);
+        if (password_edit_) {
+            password_edit_->setEnabled(true);
+            password_edit_->setFocus();
+        }
+        // 冷却结束：恢复初始剩余次数（spec 要求"倒计时归零后恢复'剩余尝试 5/5'"）
+        remaining_attempts_ = 5;
+        update_attempts_display();
+    } else {
+        update_attempts_display();
+    }
 }
 
 }  // namespace pwdvault::ui

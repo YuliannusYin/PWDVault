@@ -48,6 +48,10 @@ public:
     /// 调用方可在显示前调用以预填充。
     void reload();
 
+signals:
+    /// 用户在空状态点击「去生成密码」时触发，父窗口切换到 GeneratorView。
+    void generate_requested();
+
 protected:
     void closeEvent(QCloseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
@@ -80,6 +84,8 @@ private:
     QTableWidget* table_ = nullptr;
     QPushButton* clear_all_btn_ = nullptr;
     QPushButton* close_btn_ = nullptr;
+    QLabel* empty_label_ = nullptr;            ///< 空状态文案标签
+    QPushButton* empty_action_button_ = nullptr;  ///< 空状态引导按钮
 };
 
 }  // namespace pwdvault::ui

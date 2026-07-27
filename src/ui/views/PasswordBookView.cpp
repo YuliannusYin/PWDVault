@@ -6,31 +6,34 @@
 // =============================================================================
 #include "PasswordBookView.h"
 #include "EditEntryDialog.h"
+#include "ErrorMessages.h"
 #include "FlowLayout.h"
 #include "IpcClient.h"
 #include "IconKit.h"
 #include "MarkdownUtil.h"
+#include "PasswordBookDelegate.h"
+#include "PasswordBookModel.h"
 #include "StrengthUtil.h"
 #include "Theme.h"
+#include "Toast.h"
 
-#include <QApplication>
-#include <QClipboard>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
-#include <QListWidgetItem>
+#include <QListView>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QString>
 #include <QStyle>
 #include <QTextBrowser>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -110,12 +113,6 @@ PasswordBookView::PasswordBookView(IpcClient* client, QWidget* parent)
 {
     build_ui();
     set_detail_actions_enabled(false);
-    // 主题切换后重新应用 primary 按钮内联样式
-    if (Theme* t = Theme::instance()) {
-        connect(t, &Theme::theme_changed, this, [this]() {
-            apply_primary_button_style(edit_btn_);
-        });
-    }
 }
 
 PasswordBookView::~PasswordBookView() = default;
@@ -145,7 +142,7 @@ void PasswordBookView::build_ui() {
     search_layout->addWidget(search_icon);
 
     search_edit_ = new QLineEdit(search_container);
-    search_edit_->setPlaceholderText(QStringLiteral("搜索条目名、账号、用户名、备注…"));
+    search_edit_->setPlaceholderText(tr("搜索条目名、账号、用户名、备注…"));
     search_edit_->setProperty("cssClass", QStringLiteral("inlineEdit"));
     search_layout->addWidget(search_edit_, 1);
     search_row->addWidget(search_container, 1);
@@ -153,18 +150,24 @@ void PasswordBookView::build_ui() {
     // 字段下拉
     field_combo_ = new QComboBox(this);
     field_combo_->setFixedSize(140, 40);
-    field_combo_->addItem(QStringLiteral("全部字段"), QStringLiteral("all"));
-    field_combo_->addItem(QStringLiteral("条目名"), QStringLiteral("entry_name"));
-    field_combo_->addItem(QStringLiteral("账号"), QStringLiteral("account"));
-    field_combo_->addItem(QStringLiteral("用户名"), QStringLiteral("username"));
-    field_combo_->addItem(QStringLiteral("网站"), QStringLiteral("website"));
-    field_combo_->addItem(QStringLiteral("备注"), QStringLiteral("note"));
+    field_combo_->addItem(tr("全部字段"), QStringLiteral("all"));
+    field_combo_->setItemData(0, tr("在所有字段中搜索"), Qt::ToolTipRole);
+    field_combo_->addItem(tr("条目名"), QStringLiteral("entry_name"));
+    field_combo_->setItemData(1, tr("只在条目名中搜索"), Qt::ToolTipRole);
+    field_combo_->addItem(tr("账号"), QStringLiteral("account"));
+    field_combo_->setItemData(2, tr("只在账号字段中搜索"), Qt::ToolTipRole);
+    field_combo_->addItem(tr("用户名"), QStringLiteral("username"));
+    field_combo_->setItemData(3, tr("只在用户名字段中搜索"), Qt::ToolTipRole);
+    field_combo_->addItem(tr("网站"), QStringLiteral("website"));
+    field_combo_->setItemData(4, tr("只在网站字段中搜索"), Qt::ToolTipRole);
+    field_combo_->addItem(tr("备注"), QStringLiteral("note"));
+    field_combo_->setItemData(5, tr("只在备注中搜索"), Qt::ToolTipRole);
     search_row->addWidget(field_combo_);
 
     // 刷新按钮
     refresh_button_ = make_icon_btn(
         QStringLiteral(":/icons/refresh-cw.svg"),
-        IconRole::Normal, QStringLiteral("刷新"), this);
+        IconRole::Normal, tr("刷新"), this);
     refresh_button_->setFixedSize(40, 40);
     search_row->addWidget(refresh_button_);
 
@@ -182,10 +185,21 @@ void PasswordBookView::build_ui() {
     list_layout->setContentsMargins(0, 0, 0, 0);
     list_layout->setSpacing(0);
 
-    list_ = new QListWidget(list_card);
+    list_ = new QListView(list_card);
     list_->setSelectionMode(QAbstractItemView::SingleSelection);
-    list_->setFocusPolicy(Qt::NoFocus);
+    list_->setFocusPolicy(Qt::StrongFocus);
     list_->setCursor(Qt::PointingHandCursor);
+    list_->setMouseTracking(true);  // 用于 entered 信号触发 tooltip（model 已提供 ToolTipRole）
+    list_->setUniformItemSizes(true);  // 所有 item 高度统一 72px，性能优化
+    // 禁用横向滚动：条目内容（名称/账号/标签）由 delegate 自绘，固定宽度 340px
+    // 内截断，无需横向滚动；保持 card 视觉整洁，避免意外出现横向滚动条
+    list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // cardScroll：QSS 据此应用细线滚动条（2px 宽，上下留 12px 避让 card 圆角）
+    list_->setProperty("cssClass", QStringLiteral("cardScroll"));
+    model_ = new PasswordBookModel(list_);
+    delegate_ = new PasswordBookDelegate(list_);
+    list_->setModel(model_);
+    list_->setItemDelegate(delegate_);
     list_layout->addWidget(list_);
     md_layout->addWidget(list_card, 0);
 
@@ -199,21 +213,35 @@ void PasswordBookView::build_ui() {
     detail_scroll_ = new QScrollArea(detail_card);
     detail_scroll_->setWidgetResizable(true);
     detail_scroll_->setFrameShape(QFrame::NoFrame);
-    detail_scroll_->setStyleSheet(
-        QStringLiteral("QScrollArea { background-color: transparent; border: none; }"));
+    // cardScroll：QSS 据此应用细线滚动条（2px 宽，上下留 12px 避让 card 圆角）
+    detail_scroll_->setProperty("cssClass", QStringLiteral("cardScroll"));
 
     detail_container_ = new QWidget(detail_scroll_);
-    detail_container_->setStyleSheet(QStringLiteral("background-color: transparent;"));
+    detail_container_->setProperty("cssClass", QStringLiteral("transparentBg"));
     auto* detail_layout = new QVBoxLayout(detail_container_);
     detail_layout->setContentsMargins(28, 28, 28, 28);
     detail_layout->setSpacing(0);
 
-    // 空状态提示
+    // 空状态提示（empty_hint_ + empty_add_button_ 居中容器）
+    auto* empty_state_layout = new QVBoxLayout();
+    empty_state_layout->setSpacing(12);
     empty_hint_ = new QLabel(detail_container_);
     empty_hint_->setAlignment(Qt::AlignCenter);
     empty_hint_->setProperty("cssClass", QStringLiteral("emptyHint"));
-    empty_hint_->setText(QStringLiteral("从左侧选择一条记录查看详情"));
-    detail_layout->addWidget(empty_hint_);
+    empty_hint_->setText(tr("从左侧选择一条记录查看详情"));
+    empty_state_layout->addWidget(empty_hint_);
+
+    empty_add_button_ = new QPushButton(detail_container_);
+    empty_add_button_->setText(tr("新建条目"));
+    empty_add_button_->setCursor(Qt::PointingHandCursor);
+    empty_add_button_->setFixedHeight(40);
+    empty_add_button_->setMaximumWidth(180);
+    empty_add_button_->setProperty("cssClass", QStringLiteral("primary"));
+    empty_add_button_->hide();  // 默认隐藏，show_empty_state 时按需显示
+    empty_state_layout->addWidget(empty_add_button_, 0, Qt::AlignCenter);
+
+    detail_layout->addStretch(1);
+    detail_layout->addLayout(empty_state_layout);
     detail_layout->addStretch(1);
 
     detail_scroll_->setWidget(detail_container_);
@@ -246,27 +274,27 @@ void PasswordBookView::build_ui() {
 
     // 头部右侧操作按钮
     copy_account_btn_ = make_icon_btn(
-        QStringLiteral(":/icons/copy.svg"),
-        IconRole::Normal, QStringLiteral("复制账号"), detail_container_);
+        QStringLiteral(":/icons/user.svg"),
+        IconRole::Normal, tr("复制账号"), detail_container_);
     header_row->addWidget(copy_account_btn_);
 
     copy_pwd_btn_ = make_icon_btn(
-        QStringLiteral(":/icons/copy.svg"),
-        IconRole::Normal, QStringLiteral("复制密码"), detail_container_);
+        QStringLiteral(":/icons/key.svg"),
+        IconRole::Normal, tr("复制密码"), detail_container_);
     header_row->addWidget(copy_pwd_btn_);
 
     edit_btn_ = new QPushButton(detail_container_);
     edit_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/pencil.svg"), IconRole::OnPrimary));
     edit_btn_->setIconSize(QSize(14, 14));
-    edit_btn_->setText(QStringLiteral("编辑"));
+    edit_btn_->setText(tr("编辑"));
     edit_btn_->setCursor(Qt::PointingHandCursor);
     edit_btn_->setFixedHeight(40);
-    apply_primary_button_style(edit_btn_);
+    edit_btn_->setProperty("cssClass", QStringLiteral("primary"));
     header_row->addWidget(edit_btn_);
 
     delete_btn_ = make_icon_btn(
         QStringLiteral(":/icons/trash-2.svg"),
-        IconRole::Danger, QStringLiteral("删除"), detail_container_);
+        IconRole::Danger, tr("删除"), detail_container_);
     header_row->addWidget(delete_btn_);
 
     detail_layout->addLayout(header_row);
@@ -298,7 +326,7 @@ void PasswordBookView::build_ui() {
         value_row->addWidget(value_label, 1);
         copy_btn = make_small_icon_btn(
             QStringLiteral(":/icons/copy.svg"),
-            IconRole::Normal, QStringLiteral("复制"), row);
+            IconRole::Normal, tr("复制"), row);
         value_row->addWidget(copy_btn, 0, Qt::AlignRight);
         row_layout->addLayout(value_row);
         fields_layout->addWidget(row);
@@ -306,13 +334,15 @@ void PasswordBookView::build_ui() {
     };
 
     // 条目名
-    add_field_row(QStringLiteral("条目名"), field_entry_name_, copy_entry_name_btn_);
+    add_field_row(tr("条目名"), field_entry_name_, copy_entry_name_btn_);
     // 用户名
-    add_field_row(QStringLiteral("用户名"), field_username_, copy_user_field_btn_);
-    // 账号
-    add_field_row(QStringLiteral("账号"), field_account_, copy_account_field_btn_);
+    add_field_row(tr("用户名"), field_username_, copy_user_field_btn_);
+    // 账号（用 user.svg 区分于密码字段的 key.svg）
+    add_field_row(tr("账号"), field_account_, copy_account_field_btn_);
+    if (copy_account_field_btn_)
+        copy_account_field_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/user.svg"), IconRole::Normal));
     // 网站
-    add_field_row(QStringLiteral("网站"), field_website_, copy_website_btn_);
+    add_field_row(tr("网站"), field_website_, copy_website_btn_);
 
     // 密码行（特殊：带可见性切换 + 强度 badge）
     auto* pwd_row = new QFrame(detail_container_);
@@ -321,7 +351,7 @@ void PasswordBookView::build_ui() {
     pwd_row_layout->setContentsMargins(0, 0, 0, 12);
     pwd_row_layout->setSpacing(6);
 
-    auto* pwd_caption = new QLabel(QStringLiteral("密码"), pwd_row);
+    auto* pwd_caption = new QLabel(tr("密码"), pwd_row);
     pwd_caption->setProperty("cssClass", QStringLiteral("fieldCaption"));
     pwd_row_layout->addWidget(pwd_caption);
 
@@ -333,12 +363,12 @@ void PasswordBookView::build_ui() {
 
     toggle_pwd_btn_ = make_small_icon_btn(
         QStringLiteral(":/icons/eye.svg"),
-        IconRole::Normal, QStringLiteral("显示密码"), pwd_row);
+        IconRole::Normal, tr("显示密码"), pwd_row);
     pwd_value_row->addWidget(toggle_pwd_btn_);
 
     copy_pwd_field_btn_ = make_small_icon_btn(
-        QStringLiteral(":/icons/copy.svg"),
-        IconRole::Normal, QStringLiteral("复制密码"), pwd_row);
+        QStringLiteral(":/icons/key.svg"),
+        IconRole::Normal, tr("复制密码"), pwd_row);
     pwd_value_row->addWidget(copy_pwd_field_btn_);
 
     strength_badge_ = new QLabel(pwd_row);
@@ -355,12 +385,11 @@ void PasswordBookView::build_ui() {
     tags_row_layout->setContentsMargins(0, 0, 0, 12);
     tags_row_layout->setSpacing(6);
 
-    auto* tags_caption = new QLabel(QStringLiteral("标签"), tags_row);
+    auto* tags_caption = new QLabel(tr("标签"), tags_row);
     tags_caption->setProperty("cssClass", QStringLiteral("fieldCaption"));
     tags_row_layout->addWidget(tags_caption);
 
     field_tags_container_ = new QWidget(tags_row);
-    field_tags_container_->setStyleSheet(QStringLiteral("background: transparent;"));
     field_tags_layout_ = new FlowLayout(field_tags_container_, /*margin=*/0, /*hSpacing=*/6, /*vSpacing=*/6);
     tags_row_layout->addWidget(field_tags_container_);
     fields_layout->addWidget(tags_row);
@@ -372,7 +401,7 @@ void PasswordBookView::build_ui() {
     note_row_layout->setContentsMargins(0, 0, 0, 12);
     note_row_layout->setSpacing(6);
 
-    auto* note_caption = new QLabel(QStringLiteral("备注"), note_row);
+    auto* note_caption = new QLabel(tr("备注"), note_row);
     note_caption->setProperty("cssClass", QStringLiteral("fieldCaption"));
     note_row_layout->addWidget(note_caption);
 
@@ -380,7 +409,8 @@ void PasswordBookView::build_ui() {
     field_note_->setOpenExternalLinks(true);
     field_note_->setProperty("cssClass", QStringLiteral("markdownView"));
     field_note_->setMinimumHeight(60);
-    field_note_->setMaximumHeight(240);
+    // 不设上限让其完全展开，高度跟随内容；避免内部滚动与外层 detail_scroll_ 嵌套。
+    field_note_->setMaximumHeight(QWIDGETSIZE_MAX);
     note_row_layout->addWidget(field_note_);
     fields_layout->addWidget(note_row);
 
@@ -390,7 +420,7 @@ void PasswordBookView::build_ui() {
 
     auto* created_col = new QVBoxLayout();
     created_col->setSpacing(6);
-    auto* created_caption = new QLabel(QStringLiteral("创建时间"), detail_container_);
+    auto* created_caption = new QLabel(tr("创建时间"), detail_container_);
     created_caption->setProperty("cssClass", QStringLiteral("fieldCaption"));
     created_col->addWidget(created_caption);
     field_created_ = new QLabel(detail_container_);
@@ -400,7 +430,7 @@ void PasswordBookView::build_ui() {
 
     auto* updated_col = new QVBoxLayout();
     updated_col->setSpacing(6);
-    auto* updated_caption = new QLabel(QStringLiteral("修改时间"), detail_container_);
+    auto* updated_caption = new QLabel(tr("修改时间"), detail_container_);
     updated_caption->setProperty("cssClass", QStringLiteral("fieldCaption"));
     updated_col->addWidget(updated_caption);
     field_updated_ = new QLabel(detail_container_);
@@ -433,8 +463,8 @@ void PasswordBookView::build_ui() {
             this, &PasswordBookView::on_search_text_changed);
     connect(refresh_button_, &QPushButton::clicked,
             this, &PasswordBookView::on_refresh_clicked);
-    connect(list_, &QListWidget::currentItemChanged,
-            this, &PasswordBookView::on_list_item_changed);
+    connect(list_->selectionModel(), &QItemSelectionModel::currentChanged,
+            this, &PasswordBookView::on_list_current_changed);
     connect(copy_account_btn_, &QPushButton::clicked,
             this, &PasswordBookView::on_copy_account_clicked);
     connect(copy_pwd_btn_, &QPushButton::clicked,
@@ -444,8 +474,9 @@ void PasswordBookView::build_ui() {
                 if (current_id_ == 0) return;
                 const auto* entry = current_entry();
                 if (!entry) return;
-                QApplication::clipboard()->setText(
+                copy_secure_to_clipboard(
                     QString::fromStdString(entry->entry_name));
+                Toast::show(this, tr("已复制，30 秒后自动清空"));
             });
     connect(copy_account_field_btn_, &QPushButton::clicked,
             this, &PasswordBookView::on_copy_account_clicked);
@@ -454,16 +485,18 @@ void PasswordBookView::build_ui() {
                 if (current_id_ == 0) return;
                 const auto* entry = current_entry();
                 if (!entry) return;
-                QApplication::clipboard()->setText(
+                copy_secure_to_clipboard(
                     QString::fromStdString(entry->username));
+                Toast::show(this, tr("已复制，30 秒后自动清空"));
             });
     connect(copy_website_btn_, &QPushButton::clicked,
             this, [this]() {
                 if (current_id_ == 0) return;
                 const auto* entry = current_entry();
                 if (!entry) return;
-                QApplication::clipboard()->setText(
+                copy_secure_to_clipboard(
                     QString::fromStdString(entry->website));
+                Toast::show(this, tr("已复制，30 秒后自动清空"));
             });
     connect(copy_pwd_field_btn_, &QPushButton::clicked,
             this, &PasswordBookView::on_copy_password_clicked);
@@ -475,6 +508,21 @@ void PasswordBookView::build_ui() {
             this, &PasswordBookView::on_delete_clicked);
     connect(open_external_btn_, &QPushButton::clicked,
             this, &PasswordBookView::on_open_external_clicked);
+    connect(empty_add_button_, &QPushButton::clicked,
+            this, &PasswordBookView::entry_add_requested);
+
+    // ── 增量搜索 debounce 定时器（300ms） ──
+    search_timer_ = new QTimer(this);
+    search_timer_->setSingleShot(true);
+    search_timer_->setInterval(300);
+    connect(search_timer_, &QTimer::timeout, this, [this]() {
+        const QString text = pending_search_text_.trimmed();
+        const QString field = field_combo_->currentData().toString();
+        search_async(text, field);
+    });
+
+    // loading_hint_ 复用 empty_hint_ 的位置/样式，不新建控件
+    loading_hint_ = empty_hint_;
 }
 
 // ---------------------------------------------------------------------------
@@ -482,158 +530,118 @@ void PasswordBookView::build_ui() {
 // ---------------------------------------------------------------------------
 
 void PasswordBookView::refresh() {
+    refresh_async();
+}
+
+void PasswordBookView::focus_search() {
+    if (search_edit_) search_edit_->setFocus();
+}
+
+void PasswordBookView::focus_list() {
+    if (list_) list_->setFocus();
+}
+
+void PasswordBookView::refresh_async() {
     if (!client_) {
-        show_empty_state(QStringLiteral("IPC 客户端不可用"));
+        show_empty_state(tr("IPC 客户端不可用"));
         return;
     }
-    auto result = client_->list_entries();
-    if (result.ok()) {
-        populate_list(result.value().entries);
-    } else {
-        populate_list({});
-        show_empty_state(
-            QStringLiteral("加载失败：%1")
-                .arg(QString::fromStdString(result.error().what())));
-    }
+    begin_loading(tr("加载中…"));
+    auto* watcher = new QFutureWatcher<core::Result<protocol::ListEntriesResponse>>(this);
+    connect(watcher, &QFutureWatcher<core::Result<protocol::ListEntriesResponse>>::finished,
+            this, [this, watcher]() {
+        auto result = watcher->result();
+        if (result.ok()) {
+            populate_list(result.value().entries);
+        } else {
+            populate_list({});
+            show_empty_state(
+                tr("加载失败：%1").arg(friendly_message(result.error())));
+        }
+        end_loading();
+        watcher->deleteLater();
+    });
+    watcher->setFuture(client_->list_entries_async());
 }
 
 void PasswordBookView::on_search_clicked() {
-    if (!client_) return;
+    // 立即搜索：取消 pending debounce，直接发起请求
+    if (search_timer_) search_timer_->stop();
     const QString text = search_edit_->text().trimmed();
+    const QString field = field_combo_->currentData().toString();
+    search_async(text, field);
+}
+
+void PasswordBookView::search_async(const QString& text, const QString& field) {
+    if (!client_) return;
     if (text.isEmpty()) {
-        refresh();
+        refresh_async();
         return;
     }
 
     core::SearchQuery query;
     query.text = text.toStdString();
     query.case_sensitive = false;
+    if (field == QStringLiteral("entry_name")) query.fields = {"entry_name"};
+    else if (field == QStringLiteral("account")) query.fields = {"account"};
+    else if (field == QStringLiteral("username")) query.fields = {"username"};
+    else if (field == QStringLiteral("website")) query.fields = {"website"};
+    else if (field == QStringLiteral("note")) query.fields = {"note"};
 
-    const QString field = field_combo_->currentData().toString();
-    if (field == QStringLiteral("entry_name")) {
-        query.fields = {"entry_name"};
-    } else if (field == QStringLiteral("account")) {
-        query.fields = {"account"};
-    } else if (field == QStringLiteral("username")) {
-        query.fields = {"username"};
-    } else if (field == QStringLiteral("website")) {
-        query.fields = {"website"};
-    } else if (field == QStringLiteral("note")) {
-        query.fields = {"note"};
-    }
-
-    auto result = client_->search_entries(query);
-    if (result.ok()) {
-        populate_list(result.value().entries);
-    } else {
-        populate_list({});
-        show_empty_state(
-            QStringLiteral("搜索失败：%1")
-                .arg(QString::fromStdString(result.error().what())));
-    }
+    begin_loading(tr("搜索中…"));
+    auto* watcher = new QFutureWatcher<core::Result<protocol::SearchEntriesResponse>>(this);
+    connect(watcher, &QFutureWatcher<core::Result<protocol::SearchEntriesResponse>>::finished,
+            this, [this, watcher]() {
+        auto result = watcher->result();
+        if (result.ok()) {
+            populate_list(result.value().entries);
+        } else {
+            populate_list({});
+            show_empty_state(
+                tr("搜索失败：%1").arg(friendly_message(result.error())));
+        }
+        end_loading();
+        watcher->deleteLater();
+    });
+    watcher->setFuture(client_->search_entries_async(query));
 }
 
 void PasswordBookView::on_refresh_clicked() {
-    // 用 QSignalBlocker 阻止 clear() 触发 textChanged → on_search_text_changed → refresh()，
-    // 避免与下面的显式 refresh() 重复发起 IPC 请求。
+    // 用 QSignalBlocker 阻止 clear() 触发 textChanged → on_search_text_changed，
+    // 避免与下面的显式 refresh_async() 重复发起 IPC 请求。
     {
         QSignalBlocker blocker(search_edit_);
         search_edit_->clear();
     }
     field_combo_->setCurrentIndex(0);
+    clear_all_note_cache();  // 刷新时清空 Markdown 缓存，避免显示过期内容
     refresh();
 }
 
 void PasswordBookView::on_search_text_changed(const QString& text) {
-    // 文本清空时自动刷新全量
     if (text.isEmpty()) {
-        refresh();
+        // 清空时立即 refresh，不等 debounce
+        if (search_timer_) search_timer_->stop();
+        refresh_async();
+        return;
     }
+    // 累积文本并启动 debounce
+    pending_search_text_ = text;
+    search_timer_->start();
 }
 
 void PasswordBookView::populate_list(const std::vector<core::PasswordEntry>& new_entries) {
     entries_ = new_entries;
-    list_->clear();
-
-    for (const auto& e : entries_) {
-        auto* item = new QListWidgetItem(list_);
-        item->setData(Qt::UserRole, static_cast<qint64>(e.id));
-        const bool has_tags = !e.tags.empty();
-        // 列表项高度：有标签时 72px（条目名 + 标签 chips 两行），无标签 60px
-        item->setSizeHint(QSize(320, has_tags ? 72 : 60));
-
-        // 自定义 item widget：头像 + 条目名 + 标签 chips + chevron
-        auto* widget = new QWidget(list_);
-        widget->setStyleSheet(QStringLiteral("background: transparent;"));
-        auto* row = new QHBoxLayout(widget);
-        row->setContentsMargins(12, 8, 12, 8);
-        row->setSpacing(10);
-
-        auto* avatar = new QLabel(widget);
-        avatar->setFixedSize(40, 40);
-        avatar->setAlignment(Qt::AlignCenter);
-        avatar->setProperty("cssClass", QStringLiteral("avatar"));
-        // 头像字符优先用 entry_name，回退到 account / website
-        std::string avatar_src = e.entry_name;
-        if (avatar_src.empty()) avatar_src = e.account;
-        if (avatar_src.empty()) avatar_src = e.website;
-        avatar->setText(avatar_letter(avatar_src));
-        // 显式 AlignVCenter 修复 avatar 在 row 中可能偏移的问题
-        row->addWidget(avatar, 0, Qt::AlignVCenter);
-
-        auto* text_col = new QVBoxLayout();
-        text_col->setSpacing(4);
-        // 主标题：条目名（回退到账号 → website）
-        std::string title_src = e.entry_name;
-        if (title_src.empty()) title_src = e.account;
-        if (title_src.empty()) title_src = e.website;
-        auto* name_label = new QLabel(
-            QString::fromStdString(title_src), widget);
-        name_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
-        name_label->setWordWrap(false);
-        text_col->addWidget(name_label);
-
-        // 标签 chips（仅当有标签时显示）
-        if (has_tags) {
-            auto* tags_row = new QHBoxLayout();
-            tags_row->setSpacing(4);
-            tags_row->setContentsMargins(0, 0, 0, 0);
-            // 限制最多展示 3 个 chip，避免行宽溢出
-            const size_t max_show = 3;
-            for (size_t i = 0; i < e.tags.size() && i < max_show; ++i) {
-                auto* chip = new QLabel(
-                    QString::fromStdString(e.tags[i].name), widget);
-                chip->setProperty("cssClass", QStringLiteral("listTagChip"));
-                tags_row->addWidget(chip);
-            }
-            if (e.tags.size() > max_show) {
-                auto* more = new QLabel(
-                    QStringLiteral("+%1").arg(e.tags.size() - max_show),
-                    widget);
-                more->setProperty("cssClass", QStringLiteral("listTagMore"));
-                tags_row->addWidget(more);
-            }
-            tags_row->addStretch(1);
-            text_col->addLayout(tags_row);
-        }
-        text_col->addStretch(1);
-        row->addLayout(text_col, 1);
-
-        auto* chevron = new QLabel(widget);
-        chevron->setPixmap(tinted_pixmap(QStringLiteral(":/icons/chevron-right.svg"), IconRole::Normal, QSize(16, 16)));
-        chevron->setProperty("cssClass", QStringLiteral("inlineIcon"));
-        row->addWidget(chevron, 0, Qt::AlignVCenter);
-
-        list_->setItemWidget(item, widget);
-    }
+    model_->set_entries(entries_);
 
     emit entry_count_changed(static_cast<int>(entries_.size()));
 
     if (entries_.empty()) {
-        show_empty_state(QStringLiteral("暂无密码条目"));
+        show_empty_state(tr("暂无密码条目"));
     } else {
-        // 默认选中第一条
-        list_->setCurrentRow(0);
+        // 默认选中第一条；currentChanged 信号会触发 load_detail
+        const QModelIndex first = model_->index(0);
+        list_->setCurrentIndex(first);
     }
 }
 
@@ -644,7 +652,34 @@ void PasswordBookView::populate_list(const std::vector<core::PasswordEntry>& new
 void PasswordBookView::show_empty_state(const QString& message) {
     empty_hint_->setText(message);
     empty_hint_->show();
+    // 仅当 message 是"暂无密码条目"类（非加载中、非错误）时才显示新建按钮
+    const bool show_add = (message == tr("暂无密码条目"));
+    empty_add_button_->setVisible(show_add);
     clear_detail();
+}
+
+void PasswordBookView::begin_loading(const QString& message) {
+    // 复用 empty_hint_ 显示 loading 文案
+    if (loading_hint_) {
+        loading_hint_->setText(message);
+        loading_hint_->show();
+    }
+    if (empty_add_button_) empty_add_button_->hide();  // loading 时不显示新建按钮
+    // 列表区禁用，防止用户在加载中操作
+    if (list_) list_->setEnabled(false);
+}
+
+void PasswordBookView::end_loading() {
+    if (list_) list_->setEnabled(true);
+    // empty_hint_ 的隐藏由 populate_list/show_empty_state 控制
+}
+
+void PasswordBookView::clear_note_cache_for(int64_t id) {
+    note_cache_.remove(id);
+}
+
+void PasswordBookView::clear_all_note_cache() {
+    note_cache_.clear();
 }
 
 void PasswordBookView::clear_detail() {
@@ -687,6 +722,7 @@ void PasswordBookView::load_detail(const core::PasswordEntry& entry) {
     password_visible_ = false;
 
     empty_hint_->hide();
+    empty_add_button_->hide();  // 加载详情时隐藏空状态按钮
 
     // 头部
     std::string avatar_src = entry.entry_name;
@@ -717,27 +753,34 @@ void PasswordBookView::load_detail(const core::PasswordEntry& entry) {
     field_website_->setText(QString::fromStdString(entry.website));
     field_website_->parentWidget()->show();
 
-    // 密码：默认掩码
-    field_password_->setText(QStringLiteral("••••••••••••"));
+    // 密码：默认掩码（方块字符 ████，参考 Telegram 桌面端风格）
+    field_password_->setText(QStringLiteral("████████████"));
     field_password_->parentWidget()->show();
     toggle_pwd_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/eye.svg"), IconRole::Normal));
-    toggle_pwd_btn_->setToolTip(QStringLiteral("显示密码"));
+    toggle_pwd_btn_->setToolTip(tr("显示密码"));
     toggle_pwd_btn_->show();
     copy_pwd_field_btn_->show();
 
-    // 强度 badge（仅当 client 可用时查询）
+    // 强度 badge：异步查询，结果回来后再显示
+    //   仅当用户仍在看同一 entry 时才更新（避免竞态导致显示错位）
     if (client_) {
-        auto r = client_->estimate_strength(entry.password);
-        if (r.ok()) {
-            const auto level = r.value().estimate.level;
-            strength_badge_->setText(strength_text(level));
-            strength_badge_->setProperty("cssClass", strength_badge_class(level));
-            strength_badge_->style()->unpolish(strength_badge_);
-            strength_badge_->style()->polish(strength_badge_);
-            strength_badge_->show();
-        } else {
-            strength_badge_->hide();
-        }
+        strength_badge_->hide();
+        const int64_t entry_id = entry.id;
+        auto* watcher = new QFutureWatcher<core::Result<protocol::EstimateStrengthResponse>>(this);
+        connect(watcher, &QFutureWatcher<core::Result<protocol::EstimateStrengthResponse>>::finished,
+                this, [this, watcher, entry_id]() {
+            auto r = watcher->result();
+            if (current_id_ == entry_id && r.ok()) {
+                const auto level = r.value().estimate.level;
+                strength_badge_->setText(strength_text(level));
+                strength_badge_->setProperty("cssClass", strength_badge_class(level));
+                strength_badge_->style()->unpolish(strength_badge_);
+                strength_badge_->style()->polish(strength_badge_);
+                strength_badge_->show();
+            }
+            watcher->deleteLater();
+        });
+        watcher->setFuture(client_->estimate_strength_async(entry.password));
     } else {
         strength_badge_->hide();
     }
@@ -761,12 +804,20 @@ void PasswordBookView::load_detail(const core::PasswordEntry& entry) {
         field_tags_container_->parentWidget()->show();
     }
 
-    // 备注：markdown → HTML 渲染
+    // 备注：markdown → HTML 渲染（按 entry.id 缓存，避免重复渲染）
     //   空备注用 <p class="muted"> 显示「(无)」，由 QSS 接管颜色，深浅主题自动适配。
     if (entry.note.empty()) {
-        field_note_->setHtml(QStringLiteral("<p class=\"muted\">(无)</p>"));
+        field_note_->setHtml(tr("<p class=\"muted\">(无)</p>"));
     } else {
-        field_note_->setHtml(markdown_to_html(entry.note));
+        QString html;
+        const auto cache_it = note_cache_.find(entry.id);
+        if (cache_it != note_cache_.end()) {
+            html = cache_it.value();
+        } else {
+            html = markdown_to_html(entry.note);
+            note_cache_.insert(entry.id, html);
+        }
+        field_note_->setHtml(html);
     }
     field_note_->parentWidget()->show();
 
@@ -786,7 +837,7 @@ void PasswordBookView::load_detail(const core::PasswordEntry& entry) {
         open_external_btn_->hide();
     } else {
         open_external_btn_->setText(
-            QStringLiteral("打开 %1").arg(QString::fromStdString(entry.website)));
+            tr("打开 %1").arg(QString::fromStdString(entry.website)));
         open_external_btn_->show();
     }
 
@@ -815,20 +866,18 @@ const core::PasswordEntry* PasswordBookView::current_entry() const {
     return nullptr;
 }
 
-void PasswordBookView::on_list_item_changed(QListWidgetItem* current, QListWidgetItem* previous) {
+void PasswordBookView::on_list_current_changed(const QModelIndex& current, const QModelIndex& previous) {
     (void)previous;
-    if (!current) {
+    if (!current.isValid()) {
         clear_detail();
         return;
     }
-    const int64_t id = static_cast<int64_t>(current->data(Qt::UserRole).toLongLong());
-    for (const auto& e : entries_) {
-        if (e.id == id) {
-            load_detail(e);
-            return;
-        }
+    const auto* entry = model_->entry_at(current.row());
+    if (entry) {
+        load_detail(*entry);
+    } else {
+        clear_detail();
     }
-    clear_detail();
 }
 
 // ---------------------------------------------------------------------------
@@ -838,22 +887,17 @@ void PasswordBookView::on_list_item_changed(QListWidgetItem* current, QListWidge
 void PasswordBookView::on_copy_account_clicked() {
     const auto* entry = current_entry();
     if (!entry) return;
-    QApplication::clipboard()->setText(QString::fromStdString(entry->account));
+    copy_secure_to_clipboard(QString::fromStdString(entry->account));
+    Toast::show(this, tr("已复制，30 秒后自动清空"));
 }
 
 void PasswordBookView::on_copy_password_clicked() {
     const auto* entry = current_entry();
-    if (!entry || !client_) return;
-    // 调用 get_entry 拿最新明文密码（保险起见）
-    auto r = client_->get_entry(entry->id);
-    if (r.ok()) {
-        copy_secure_to_clipboard(
-            QString::fromStdString(r.value().entry.password));
-    } else {
-        // 回退到列表缓存
-        copy_secure_to_clipboard(
-            QString::fromStdString(entry->password));
-    }
+    if (!entry) return;
+    // 直接用缓存中的明文密码：列表加载时 service 已解密返回最新明文，
+    // 编辑保存后会 refresh，缓存也会更新。无需再次调用 get_entry。
+    copy_secure_to_clipboard(QString::fromStdString(entry->password));
+    Toast::show(this, tr("已复制，30 秒后自动清空"));
 }
 
 void PasswordBookView::on_toggle_password_clicked() {
@@ -861,21 +905,14 @@ void PasswordBookView::on_toggle_password_clicked() {
     if (!entry) return;
     password_visible_ = !password_visible_;
     if (password_visible_) {
-        // 调用 get_entry 拿明文密码（列表中可能已过期）
-        QString pwd = QString::fromStdString(entry->password);
-        if (client_) {
-            auto r = client_->get_entry(entry->id);
-            if (r.ok()) {
-                pwd = QString::fromStdString(r.value().entry.password);
-            }
-        }
-        field_password_->setText(pwd);
+        // 直接用缓存密码（同 on_copy_password_clicked 的理由）
+        field_password_->setText(QString::fromStdString(entry->password));
         toggle_pwd_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/eye-off.svg"), IconRole::Normal));
-        toggle_pwd_btn_->setToolTip(QStringLiteral("隐藏密码"));
+        toggle_pwd_btn_->setToolTip(tr("隐藏密码"));
     } else {
-        field_password_->setText(QStringLiteral("••••••••••••"));
+        field_password_->setText(QStringLiteral("████████████"));
         toggle_pwd_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/eye.svg"), IconRole::Normal));
-        toggle_pwd_btn_->setToolTip(QStringLiteral("显示密码"));
+        toggle_pwd_btn_->setToolTip(tr("显示密码"));
     }
 }
 
@@ -883,7 +920,9 @@ void PasswordBookView::on_edit_clicked() {
     const auto* entry = current_entry();
     if (!entry) return;
 
-    // 调用 get_entry 拿最新完整数据（含明文密码）
+    // 调用 get_entry 拿最新完整数据（含明文密码）。
+    // 此处保持同步调用：dlg.exec() 是模态阻塞，调用期间 UI 本来就不响应；
+    // get_entry 通常很快（< 100ms），异步化反而让对话框弹出时机延迟。
     core::PasswordEntry current = *entry;
     if (client_) {
         auto r = client_->get_entry(entry->id);
@@ -896,7 +935,9 @@ void PasswordBookView::on_edit_clicked() {
     connect(&dlg, &EditEntryDialog::entry_updated,
             this, &PasswordBookView::entry_updated);
     if (dlg.exec() == QDialog::Accepted) {
-        refresh();
+        clear_all_note_cache();  // 编辑可能改了备注，清缓存重渲染
+        refresh_async();
+        emit entry_updated(current_id_);
     }
 }
 
@@ -910,22 +951,31 @@ void PasswordBookView::on_delete_clicked() {
 
     const auto answer = QMessageBox::question(
         this,
-        QStringLiteral("确认删除"),
-        QStringLiteral("确定要删除条目「%1」吗？此操作不可撤销。").arg(name),
+        tr("确认删除"),
+        tr("确定要删除条目「%1」吗？此操作不可撤销。").arg(name),
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
     if (answer != QMessageBox::Yes) return;
-
     if (!client_) return;
-    auto result = client_->remove_entry(current_id_);
-    if (result.ok()) {
-        refresh();
-    } else {
-        const QString msg = QString::fromStdString(result.error().what());
-        QMessageBox::warning(this, QStringLiteral("删除失败"),
-            msg.isEmpty() ? QStringLiteral("删除条目失败。")
-                          : QStringLiteral("删除失败：%1").arg(msg));
-    }
+
+    // 立即清缓存（避免删除后还能从缓存拿到旧 HTML）
+    clear_note_cache_for(current_id_);
+
+    auto* watcher = new QFutureWatcher<core::Result<protocol::RemoveEntryResponse>>(this);
+    connect(watcher, &QFutureWatcher<core::Result<protocol::RemoveEntryResponse>>::finished,
+            this, [this, watcher]() {
+        auto result = watcher->result();
+        if (result.ok()) {
+            refresh_async();
+        } else {
+            const QString msg = friendly_message(result.error());
+            QMessageBox::warning(this, tr("删除失败"),
+                msg.isEmpty() ? tr("删除条目失败。")
+                              : tr("删除失败：%1").arg(msg));
+        }
+        watcher->deleteLater();
+    });
+    watcher->setFuture(client_->remove_entry_async(current_id_));
 }
 
 void PasswordBookView::on_open_external_clicked() {

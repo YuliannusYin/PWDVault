@@ -5,14 +5,15 @@
 // 轻量级 Markdown → HTML 转换实现。
 //
 // 处理顺序：
-//   1. 转义 HTML 特殊字符（& < >），防止 XSS 与误解析
+//   1. 转义 HTML 特殊字符（& < > " '），防止 XSS 与误解析
 //   2. 按行分块处理：代码块 / 标题 / 列表 / 段落
-//   3. 块内处理行内元素：粗体、斜体、行内代码、链接
+//   3. 块内处理行内元素：粗体、斜体、行内代码、链接（协议白名单）
 //
 // 限制：不完整支持 CommonMark，仅覆盖备注常见场景。
 // =============================================================================
 #include "MarkdownUtil.h"
 
+#include <QCoreApplication>
 #include <QString>
 #include <QStringList>
 #include <QRegularExpression>
@@ -23,11 +24,14 @@ namespace pwdvault::ui {
 namespace {
 
 /// 转义 HTML 特殊字符。
+/// 注意：& 必须最先替换，否则会把后引入的 &quot; / &#39; 中的 & 再次转义。
 QString escape_html(const QString& s) {
     QString out = s;
     out.replace('&', QStringLiteral("&amp;"));
     out.replace('<', QStringLiteral("&lt;"));
     out.replace('>', QStringLiteral("&gt;"));
+    out.replace('"', QStringLiteral("&quot;"));
+    out.replace('\'', QStringLiteral("&#39;"));
     return out;
 }
 
@@ -38,10 +42,33 @@ QString render_inline(QString s) {
     static const QRegularExpression code_re(QStringLiteral("`([^`]+)`"));
     s.replace(code_re, QStringLiteral("<code>\\1</code>"));
 
-    // 链接 [text](url) —— url 不转义（已在 escape_html 处理过）
+    // 链接 [text](url) —— 校验 url 协议只允许 http/https/mailto，防注入。
+    // url 已被 escape_html，但协议字符 :/ 不被转义，可直接 startsWith 判断。
     static const QRegularExpression link_re(
         QStringLiteral("\\[([^\\]]+)\\]\\(([^)]+)\\)"));
-    s.replace(link_re, QStringLiteral("<a href=\"\\2\">\\1</a>"));
+    QString result;
+    qsizetype last_end = 0;
+    auto it = link_re.globalMatch(s);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        result += s.mid(last_end, m.capturedStart() - last_end);
+        const QString text = m.captured(1);
+        const QString url = m.captured(2);
+        const bool allowed = url.startsWith(QStringLiteral("http://"))
+                          || url.startsWith(QStringLiteral("https://"))
+                          || url.startsWith(QStringLiteral("mailto:"));
+        if (allowed) {
+            result += QStringLiteral("<a href=\"") + url
+                   + QStringLiteral("\">") + text + QStringLiteral("</a>");
+        } else {
+            // 非法协议：原样输出文本（不带链接）
+            result += QStringLiteral("[") + text
+                   + QStringLiteral("](") + url + QStringLiteral(")");
+        }
+        last_end = m.capturedEnd();
+    }
+    result += s.mid(last_end);
+    s = result;
 
     // 粗体 **text**
     static const QRegularExpression bold_re(QStringLiteral("\\*\\*([^*]+)\\*\\*"));
@@ -62,7 +89,7 @@ QString markdown_to_html(const std::string& md) {
 
 QString markdown_to_html(const QString& md) {
     if (md.isEmpty()) {
-        return QStringLiteral("<p style=\"color:#8b95a8;\">（无）</p>");
+        return QCoreApplication::translate("MarkdownUtil", "<p class=\"muted\">（无）</p>");
     }
 
     const QStringList lines = md.split('\n');

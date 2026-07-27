@@ -45,7 +45,8 @@ QToolTip {
     color: #0f1626;
     border: 1px solid rgba(15, 22, 38, 0.08);
     border-radius: 6px;
-    padding: 6px 10px;
+    padding: 2px 4px;
+    font-size: 12px;
 }
 
 /* ── 滚动条：纤细低调 ── */
@@ -75,6 +76,39 @@ QScrollBar::add-line, QScrollBar::sub-line {
     width: 0;
 }
 QScrollBar::add-page, QScrollBar::sub-page {
+    background: transparent;
+}
+
+/* ── card 内细线滚动条（cardScroll）──
+   2px 宽细线，上下 margin 14px 避让 card 圆角（border-radius:12px）+ 2px 余量，
+   track 透明，handle 无边框圆角，紧贴 card 右边框内侧不超出圆角。
+   cardScroll 列表自身 padding:0，确保滚动条紧贴 card 右边框。 */
+[cssClass="cardScroll"] {
+    padding: 0;
+}
+[cssClass="cardScroll"] QScrollBar:vertical {
+    background: transparent;
+    width: 2px;
+    margin: 14px 0 14px 0;
+    border: none;
+}
+[cssClass="cardScroll"] QScrollBar::handle:vertical {
+    background: rgba(15, 22, 38, 0.14);
+    border: none;
+    border-radius: 1px;
+    min-height: 32px;
+    margin: 0;
+}
+[cssClass="cardScroll"] QScrollBar::handle:vertical:hover {
+    background: rgba(15, 22, 38, 0.22);
+}
+[cssClass="cardScroll"] QScrollBar::add-line,
+[cssClass="cardScroll"] QScrollBar::sub-line {
+    height: 0;
+    width: 0;
+}
+[cssClass="cardScroll"] QScrollBar::add-page,
+[cssClass="cardScroll"] QScrollBar::sub-page {
     background: transparent;
 }
 
@@ -197,6 +231,30 @@ QLineEdit:hover, QPlainTextEdit:hover, QTextEdit:hover, QComboBox:hover {
 }
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QComboBox:focus {
     border-color: #2f5fff;
+}
+
+/* ── 焦点视觉（键盘导航可见性） ──
+   * { outline: none; } 已屏蔽默认焦点虚线，下面按控件类型补回焦点视觉：
+   - 有边框的控件（QPushButton/QSpinBox/QDoubleSpinBox）：变更 border-color
+   - 无边框的 QCheckBox/QRadioButton：用 outline 重新绘制
+   - 列表/表格/树：1px 实色边框
+   以下 :focus 选择器特异性高于 * { outline: none; }，故 outline 属性会生效。 */
+QPushButton:focus {
+    border-color: #2f5fff;
+}
+QPushButton[cssClass="primary"]:focus {
+    outline: 2px solid #2f5fff;
+    outline-offset: 1px;
+}
+QCheckBox:focus, QRadioButton:focus {
+    outline: 1px solid #2f5fff;
+    outline-offset: 2px;
+}
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border-color: #2f5fff;
+}
+QListWidget:focus, QTableWidget:focus, QTreeView:focus {
+    border: 1px solid #2f5fff;
 }
 QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled {
     color: #a3afc4;
@@ -328,14 +386,14 @@ QLabel[cssClass="badgeDanger"] {
     font-size: 11px;
 }
 QLabel[cssClass="badgeInfo"] {
-    background-color: rgba(47, 95, 255, 0.10);
+    background-color: rgba(47, 95, 255, 0.12);
     color: #2f5fff;
     border-radius: 10px;
     padding: 2px 10px;
     font-size: 11px;
 }
 QLabel[cssClass="badgeVeryStrong"] {
-    background-color: rgba(15, 122, 61, 0.14);
+    background-color: rgba(15, 122, 61, 0.16);
     color: #0f7a3d;
     border-radius: 10px;
     padding: 2px 10px;
@@ -411,8 +469,11 @@ QFrame[cssClass="topbar"] {
 }
 
 /* 模态弹窗 */
+/* border-radius 8px 与 Win11 DWM 主窗口圆角视觉对齐；
+   圆角外区域由 WA_TranslucentBackground 透出主窗口圆角，避免遮罩覆盖桌面。 */
 QFrame[cssClass="modalOverlay"] {
     background-color: rgba(15, 22, 38, 0.45);
+    border-radius: 8px;
 }
 QFrame[cssClass="modal"] {
     background-color: #ffffff;
@@ -442,8 +503,14 @@ QFrame[cssClass="infoBox"] {
     border-radius: 8px;
 }
 
-/* ── 列表（QListWidget 用于密码本左侧列表） ── */
-QListWidget {
+/* ── 滚动区域（透明背景，让父容器底色透出） ── */
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+/* ── 列表（QListWidget 用于密码本左侧列表，QListView 用于 delegate 自绘列表） ── */
+QListWidget, QListView {
     background-color: transparent;
     border: none;
     border-radius: 12px;
@@ -889,8 +956,13 @@ QLabel[cssClass="listTagMore"] {
 /* =============================================================================
    Markdown 渲染控件（QTextBrowser）
    ============================================================================= */
-QTextBrowser[cssClass="markdownView"] {
-    background-color: rgba(15, 22, 38, 0.02);
+/* 特异性说明：加 QFrame[cssClass="fieldRow"] > 前缀，使特异性 (0,5,0) 高于
+   QFrame[cssClass="fieldRow"] > QWidget 的 (0,4,0)，避免 markdownView 的
+   #EDF1F7 背景被后者强制 transparent 覆盖。子规则（h1/code 等）不涉及背景
+   且非 fieldRow 直接子 widget，无需加前缀。 */
+QFrame[cssClass="fieldRow"] > QTextBrowser[cssClass="markdownView"] {
+    /* 浅色主题自适配：#EDF1F7 与侧栏底色一致，与卡片背景 #ffffff 形成层次 */
+    background-color: #EDF1F7;
     color: #0f1626;
     border: 1px solid rgba(15, 22, 38, 0.06);
     border-radius: 6px;
@@ -955,5 +1027,18 @@ QTextBrowser[cssClass="markdownView"] p {
     margin: 4px 0;
 }
 QTextBrowser[cssClass="markdownView"] .muted {
-    color: #6b7585;
+    color: #5c6678;
+}
+
+/* =============================================================================
+   透明背景容器（detail_container 等，需让 card 底色透出）
+   ============================================================================= */
+QWidget[cssClass="transparentBg"] {
+    background-color: transparent;
+}
+
+/* 标签输入控件内的 QLineEdit（融入 TagInputWidget 容器） */
+QLineEdit[cssClass="tagInput"] {
+    border: none;
+    background: transparent;
 }

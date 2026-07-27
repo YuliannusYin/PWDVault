@@ -3,11 +3,16 @@
 // IpcClient.h
 //
 // PwdVault UI 进程的命名管道 IPC 客户端。封装与 service 进程之间的同步
-// 请求/响应通信。UI 各视图通过此类调用 service 提供的命令。
+// 与异步请求/响应通信。UI 各视图通过此类调用 service 提供的命令。
 //
 // 设计要点：
 //   - 同步阻塞调用：每个 IPC 命令在调用线程上同步执行，简化实现。
-//     长时间运行的命令会阻塞 UI；后续 Task 11 可改为异步。
+//     长时间运行的命令会阻塞 UI；UI 应优先使用 _async 重载。
+//   - 异步调用：每个同步方法均有对应的 _async 重载，返回
+//     QFuture<core::Result<Resp>>，内部用 QtConcurrent::run 在线程池上
+//     执行同步 send_request，调用方用 QFutureWatcher 在主线程接收结果。
+//   - 线程安全：所有 send_request 调用由 pipe_mutex_ 串行化，多个并发
+//     async 请求会排队执行，不会竞争同一管道句柄。
 //   - 重试：connect_to_service 在失败时重试 3 次，间隔 500ms。
 //   - 超时：每个请求最多等待 10 秒，超时返回 IpcError。
 //   - 错误传播：service 端返回的 ErrorResponse 会被转换为 core::Error。
@@ -16,8 +21,12 @@
 // =============================================================================
 #pragma once
 
+#include <QFuture>
+#include <QFutureWatcher>
+#include <QMutex>
 #include <QObject>
 #include <QString>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <cstdint>
 #include <string>
@@ -105,6 +114,50 @@ public:
     core::Result<protocol::GetGeneratorSettingsResponse> get_generator_settings();
     core::Result<protocol::SetGeneratorLimitResponse> set_generator_limit(int32_t limit);
 
+    // -----------------------------------------------------------------------
+    // 异步 IPC 命令
+    //
+    // 每个 async 方法返回 QFuture<core::Result<Resp>>，调用方应使用
+    // QFutureWatcher 监听 finished() / resultReadyAt() 信号在主线程接收
+    // 结果，避免阻塞 UI 线程。具体用法见 Task 14.2-14.8。
+    //
+    // 线程模型：所有 async 调用通过 QtConcurrent::run 在线程池上执行同步
+    // send_request，由 pipe_mutex_ 串行化，多个并发 async 调用会排队执行。
+    // -----------------------------------------------------------------------
+
+    QFuture<core::Result<protocol::PingResponse>> ping_async();
+    QFuture<core::Result<protocol::UnlockResponse>> unlock_async(const std::string& password);
+    QFuture<core::Result<protocol::LockResponse>> lock_async();
+    QFuture<core::Result<protocol::EnableProgramPasswordResponse>> enable_program_password_async(const std::string& password);
+    QFuture<core::Result<protocol::DisableProgramPasswordResponse>> disable_program_password_async(const std::string& password);
+    QFuture<core::Result<protocol::ChangeProgramPasswordResponse>> change_program_password_async(const std::string& old_password, const std::string& new_password);
+    QFuture<core::Result<protocol::GetVaultStatusResponse>> get_vault_status_async();
+    QFuture<core::Result<protocol::AddEntryResponse>> add_entry_async(const core::PasswordEntry& entry);
+    QFuture<core::Result<protocol::UpdateEntryResponse>> update_entry_async(const core::PasswordEntry& entry);
+    QFuture<core::Result<protocol::RemoveEntryResponse>> remove_entry_async(int64_t id);
+    QFuture<core::Result<protocol::GetEntryResponse>> get_entry_async(int64_t id);
+    QFuture<core::Result<protocol::SearchEntriesResponse>> search_entries_async(const core::SearchQuery& query);
+    QFuture<core::Result<protocol::ListEntriesResponse>> list_entries_async();
+    QFuture<core::Result<protocol::GeneratePasswordResponse>> generate_password_async(const core::PasswordGeneratorOptions& options);
+    QFuture<core::Result<protocol::EstimateStrengthResponse>> estimate_strength_async(const std::string& password);
+
+    // 标签管理（异步）
+    QFuture<core::Result<protocol::AddTagResponse>> add_tag_async(const core::Tag& tag);
+    QFuture<core::Result<protocol::UpdateTagResponse>> update_tag_async(const core::Tag& tag);
+    QFuture<core::Result<protocol::RemoveTagResponse>> remove_tag_async(int64_t id);
+    QFuture<core::Result<protocol::ListTagsResponse>> list_tags_async();
+    QFuture<core::Result<protocol::GetTagResponse>> get_tag_async(int64_t id);
+    QFuture<core::Result<protocol::FindTagByNameResponse>> find_tag_by_name_async(const std::string& name);
+    QFuture<core::Result<protocol::GetEntryTagsResponse>> get_entry_tags_async(int64_t entry_id);
+    QFuture<core::Result<protocol::SetEntryTagsResponse>> set_entry_tags_async(int64_t entry_id, const std::vector<int64_t>& tag_ids);
+
+    // 生成器历史记录（异步）
+    QFuture<core::Result<protocol::ListGeneratedRecordsResponse>> list_generated_records_async();
+    QFuture<core::Result<protocol::RemoveGeneratedRecordResponse>> remove_generated_record_async(int64_t id);
+    QFuture<core::Result<protocol::ClearGeneratedRecordsResponse>> clear_generated_records_async();
+    QFuture<core::Result<protocol::GetGeneratorSettingsResponse>> get_generator_settings_async();
+    QFuture<core::Result<protocol::SetGeneratorLimitResponse>> set_generator_limit_async(int32_t limit);
+
 signals:
     /// 与 service 的连接断开时触发（仅在已连接→断开时触发一次）。
     void disconnected();
@@ -117,6 +170,12 @@ private:
     /// 若 service 返回 ErrorResponse，则转换为对应的 core::Error。
     template <typename Req, typename Resp>
     core::Result<Resp> send_request(protocol::CommandId cmd, const Req& req);
+
+    /// 通用异步请求模板：在 QtConcurrent 线程池上执行同步 send_request。
+    /// 由 send_request 内部加锁 pipe_mutex_ 串行化，多个并发 async 调用会
+    /// 排队执行，不会竞争同一管道句柄。
+    template <typename Req, typename Resp>
+    QFuture<core::Result<Resp>> send_request_async(protocol::CommandId cmd, const Req& req);
 
     /// 内部断连处理：关闭句柄、复位状态、触发 error_occurred + disconnected 信号。
     void handle_disconnect(const std::string& reason);
@@ -136,6 +195,12 @@ private:
 
     /// 自增的请求 ID（与 service 端匹配请求/响应）。
     uint32_t request_id_ = 0;
+
+    /// 串行化所有 send_request 调用。QtConcurrent::run 可能并发触发多个
+    /// async 请求，必须用 mutex 串行化对 pipe_handle_ 的访问，避免多个
+    /// 线程同时 write_all/read_all 导致管道帧错乱。
+    /// mutable：允许 const 方法（如 is_connected）也加锁。
+    mutable QMutex pipe_mutex_;
 };
 
 // ---------------------------------------------------------------------------
@@ -144,6 +209,11 @@ private:
 
 template <typename Req, typename Resp>
 core::Result<Resp> IpcClient::send_request(protocol::CommandId cmd, const Req& req) {
+    // 串行化所有请求：sync 调用（UI 线程）与 async 调用（QtConcurrent 线程池）
+    // 共用同一 pipe_handle_，必须互斥避免帧错乱。QMutex 默认非递归，本函数
+    // 不会重入自身，安全。
+    QMutexLocker locker(&pipe_mutex_);
+
     if (!connected_) {
         return core::Result<Resp>::Err(
             core::Error(core::ErrorCode::IpcError, "未连接到 service"));
@@ -207,6 +277,16 @@ core::Result<Resp> IpcClient::send_request(protocol::CommandId cmd, const Req& r
 
     return core::Result<Resp>::Err(core::Error(
         core::ErrorCode::IpcError, "反序列化响应失败"));
+}
+
+template <typename Req, typename Resp>
+QFuture<core::Result<Resp>> IpcClient::send_request_async(protocol::CommandId cmd, const Req& req) {
+    // 在 QtConcurrent 线程池上执行同步 send_request。pipe_mutex_ 串行化在
+    // send_request 内部完成，此处不需要再加锁（QMutex 默认非递归，重复加锁会死锁）。
+    // 捕获 this 与 req 的副本（按值）；cmd 是枚举，按值。
+    return QtConcurrent::run([this, cmd, req]() {
+        return send_request<Req, Resp>(cmd, req);
+    });
 }
 
 }  // namespace pwdvault::ui

@@ -7,6 +7,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QHash>
 #include <QIconEngine>
 #include <QPainter>
 #include <QPushButton>
@@ -30,6 +31,12 @@ QColor icon_color(IconRole role) {
         case IconRole::Danger:
             // 危险红：dark #f56363 / light #dc2626
             return dark ? QColor(0xf5, 0x63, 0x63) : QColor(0xdc, 0x26, 0x26);
+        case IconRole::Success:
+            // 成功绿：dark #2bd576 / light #1f9d57
+            return dark ? QColor(0x2b, 0xd5, 0x76) : QColor(0x1f, 0x9d, 0x57);
+        case IconRole::Info:
+            // 信息蓝：dark #3b6bff / light #2f5fff
+            return dark ? QColor(0x3b, 0x6b, 0xff) : QColor(0x2f, 0x5f, 0xff);
     }
     return dark ? QColor(0x8b, 0x95, 0xa8) : QColor(0x5c, 0x66, 0x78);
 }
@@ -105,15 +112,80 @@ private:
     QColor color_;
 };
 
+// ---------------------------------------------------------------------------
+// 缓存：避免主题切换时重复 new QSvgRenderer + parse SVG
+// ---------------------------------------------------------------------------
+//
+// 设计要点：
+//   - icons_:    key = "svg_path|HexArgb"，value = QIcon
+//     公开接口 tinted_icon 返回的 QIcon 会被业务方缓存（如 btn->setIcon），
+//     在主题未变时多次调用应返回同一 QIcon 实例。
+//   - pixmaps_:  key = "svg_path|HexArgb|WxH"，value = QPixmap
+//     pixmap 与 size 强相关，size 进入 key。
+//   - 主题切换检测：用 last_dark 记录上次渲染时的主题，每次 tinted_* 入口
+//     检查 Theme::is_dark() != last_dark，是则清空两个缓存。这是无 connect 的
+//     轻量方案，避免 IconKit 自由函数依赖某个 QObject 实例。
+//   - TintedIconEngine::pixmap 不走缓存（Qt 框架按需调用，难以拦截），但调用
+//     频率不高，且 tinted_icon 公开接口层已缓存，整体收益足够。
+//   - 缓存 key 用字符串拼接，避免为 QPair/std::tuple 注册 qHash 函数。
+//
+struct IconKitCache {
+    QHash<QString, QIcon> icons;      ///< key: "svg_path|HexArgb"
+    QHash<QString, QPixmap> pixmaps;  ///< key: "svg_path|HexArgb|WxH"
+    /// 上次缓存写入时的主题（dark/light）。任一 tinted_* 入口检测变化时清空缓存。
+    /// 初始化为与 Theme::is_dark() 相反的值，确保首次调用走清空分支完成初始化。
+    bool last_dark = !Theme::is_dark();
+};
+
+/// 单例缓存（函数局部 static，线程安全初始化，UI 单线程使用）。
+IconKitCache& icon_cache_state() {
+    static IconKitCache state;
+    return state;
+}
+
+/// 主题变化时清空两个缓存。每次 tinted_* 入口调用，开销仅一次 bool 比较。
+void maybe_invalidate_cache() {
+    const bool dark = Theme::is_dark();
+    if (dark != icon_cache_state().last_dark) {
+        icon_cache_state().icons.clear();
+        icon_cache_state().pixmaps.clear();
+        icon_cache_state().last_dark = dark;
+    }
+}
+
+/// 拼接 icon cache key：svg_path + "|" + HexArgb 颜色。
+QString icon_cache_key(const QString& svg_path, const QColor& color) {
+    return svg_path + QLatin1Char('|') + color.name(QColor::HexArgb);
+}
+
+/// 拼接 pixmap cache key：svg_path + "|" + HexArgb + "|" + WxH。
+/// 注意：用物理尺寸（已含 dpr）作 key，dpr 变化时 key 不同，自动渲染新 pixmap。
+QString pixmap_cache_key(const QString& svg_path, const QColor& color, const QSize& size) {
+    return svg_path + QLatin1Char('|') + color.name(QColor::HexArgb)
+         + QLatin1Char('|') + QString::number(size.width())
+         + QLatin1Char('x') + QString::number(size.height());
+}
+
 }  // namespace
 
 QPixmap tinted_pixmap(const QString& svg_path, const QColor& color, const QSize& size) {
+    maybe_invalidate_cache();
     // QLabel::setPixmap 场景：size 是逻辑尺寸，按 qApp dpr 渲染高清并设置 dpr，
     // 让 QLabel 在高 DPI 屏幕上清晰显示。
     const qreal dpr = qMax(qreal(1.0), qApp ? qApp->devicePixelRatio() : qreal(1.0));
     const QSize phys(qRound(size.width() * dpr), qRound(size.height() * dpr));
+    // 缓存命中直接返回，避免重复 new QSvgRenderer + parse SVG
+    const QString key = pixmap_cache_key(svg_path, color, phys);
+    const auto it = icon_cache_state().pixmaps.constFind(key);
+    if (it != icon_cache_state().pixmaps.constEnd()) {
+        return it.value();
+    }
     QPixmap pm = render_tinted(svg_path, color, phys);
     pm.setDevicePixelRatio(dpr);
+    // 仅缓存有效 pixmap；null 不缓存以便下次重试（便于开发期发现 SVG 路径错误）
+    if (!pm.isNull()) {
+        icon_cache_state().pixmaps.insert(key, pm);
+    }
     return pm;
 }
 
@@ -122,30 +194,20 @@ QPixmap tinted_pixmap(const QString& svg_path, IconRole role, const QSize& size)
 }
 
 QIcon tinted_icon(const QString& svg_path, const QColor& color) {
-    return QIcon(new TintedIconEngine(svg_path, color));
+    maybe_invalidate_cache();
+    // 缓存命中直接返回，避免每次都 new TintedIconEngine
+    const QString key = icon_cache_key(svg_path, color);
+    const auto it = icon_cache_state().icons.constFind(key);
+    if (it != icon_cache_state().icons.constEnd()) {
+        return it.value();
+    }
+    QIcon icon(new TintedIconEngine(svg_path, color));
+    icon_cache_state().icons.insert(key, icon);
+    return icon;
 }
 
 QIcon tinted_icon(const QString& svg_path, IconRole role) {
     return tinted_icon(svg_path, icon_color(role));
-}
-
-void apply_primary_button_style(QPushButton* btn) {
-    if (!btn) return;
-    // 直接用内联样式，不依赖 QSS dynamic property 选择器。
-    // 浅色模式：黑色背景；深色模式：蓝色背景。两种模式文字均为白色。
-    const bool dark = Theme::is_dark();
-    const QString bg = dark ? QStringLiteral("#3b6bff") : QStringLiteral("#0f1626");
-    const QString hover = dark ? QStringLiteral("#5a82ff") : QStringLiteral("#2a3344");
-    const QString pressed = dark ? QStringLiteral("#2f5fff") : QStringLiteral("#000000");
-    const QString disabled_bg = dark ? QStringLiteral("#3a4866") : QStringLiteral("#d6e0ff");
-    const QString disabled_fg = dark ? QStringLiteral("#5c6678") : QStringLiteral("#6f7d99");
-    btn->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: %1; color: #ffffff; border: none; "
-        "border-radius: 6px; padding: 0 18px; font-weight: 500; }"
-        "QPushButton:hover { background-color: %2; }"
-        "QPushButton:pressed { background-color: %3; }"
-        "QPushButton:disabled { background-color: %4; color: %5; }"
-    ).arg(bg, hover, pressed, disabled_bg, disabled_fg));
 }
 
 void copy_secure_to_clipboard(const QString& text) {

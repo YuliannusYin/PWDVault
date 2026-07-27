@@ -5,24 +5,27 @@
 // PwdVault 录入视图实现（新设计）。640px 居中卡片 + 图标前缀输入框 + 强度条。
 // =============================================================================
 #include "InputView.h"
+#include "ErrorMessages.h"
 #include "IconKit.h"
 #include "IpcClient.h"
 #include "StrengthUtil.h"
 #include "TagInputWidget.h"
 #include "Theme.h"
+#include "Toast.h"
 
 #include <QApplication>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
 #include <QTimer>
 #include <QLineEdit>
-#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QShowEvent>
 #include <QString>
 #include <QStyle>
 #include <QVBoxLayout>
@@ -75,12 +78,6 @@ InputView::InputView(IpcClient* client, QWidget* parent)
     : QWidget(parent), client_(client)
 {
     build_ui();
-    // 主题切换后重新应用 primary 按钮内联样式
-    if (Theme* t = Theme::instance()) {
-        connect(t, &Theme::theme_changed, this, [this]() {
-            apply_primary_button_style(save_button_);
-        });
-    }
 }
 
 InputView::~InputView() = default;
@@ -94,8 +91,6 @@ void InputView::build_ui() {
     auto* scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setStyleSheet(
-        QStringLiteral("QScrollArea { background-color: transparent; border: none; }"));
 
     auto* scroll_content = new QWidget(scroll);
     // 不设 setStyleSheet("background: transparent;")：widget 级样式表优先级
@@ -116,20 +111,23 @@ void InputView::build_ui() {
     card_layout->setSpacing(0);
 
     // 标题
-    auto* title = new QLabel(QStringLiteral("新增密码条目"), card);
+    auto* title = new QLabel(tr("新增密码条目"), card);
     title->setProperty("cssClass", QStringLiteral("sectionTitle"));
     card_layout->addWidget(title);
 
     auto* subtitle = new QLabel(
-        QStringLiteral("所有字段加密存储于本地"), card);
+        tr("所有字段加密存储于本地"), card);
     subtitle->setProperty("cssClass", QStringLiteral("muted"));
     card_layout->addWidget(subtitle);
 
     card_layout->addSpacing(24);
 
     // ── *条目名（必填） ──
+    // 必填红星颜色按主题动态决定（QSS 选择器对 QLabel 富文本 span 不生效）
+    const QString danger_color = Theme::is_dark()
+        ? QStringLiteral("#f56363") : QStringLiteral("#dc2626");
     auto* entry_name_label = new QLabel(
-        QStringLiteral("条目名 <span style=\"color:#f56363;\">*</span>"), card);
+        tr("条目名 <span style=\"color:%1;\">*</span>").arg(danger_color), card);
     entry_name_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     entry_name_label->setTextFormat(Qt::RichText);
     card_layout->addWidget(entry_name_label);
@@ -137,25 +135,25 @@ void InputView::build_ui() {
     auto* entry_name_field = make_icon_input_field(
         card, QStringLiteral(":/icons/database.svg"), entry_name_edit_);
     card_layout->addWidget(entry_name_field);
-    entry_name_edit_->setPlaceholderText(QStringLiteral("如：GitHub、公司邮箱"));
+    entry_name_edit_->setPlaceholderText(tr("如：GitHub、公司邮箱"));
 
     card_layout->addSpacing(16);
 
     // ── 用户名（可选） ──
-    auto* username_label = new QLabel(QStringLiteral("用户名"), card);
+    auto* username_label = new QLabel(tr("用户名"), card);
     username_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     card_layout->addWidget(username_label);
     card_layout->addSpacing(6);
     auto* username_field = make_icon_input_field(
         card, QStringLiteral(":/icons/user.svg"), username_edit_);
     card_layout->addWidget(username_field);
-    username_edit_->setPlaceholderText(QStringLiteral("显示名，如：张三"));
+    username_edit_->setPlaceholderText(tr("显示名，如：张三"));
 
     card_layout->addSpacing(16);
 
     // ── *账号（必填） ──
     auto* account_label = new QLabel(
-        QStringLiteral("账号 <span style=\"color:#f56363;\">*</span>"), card);
+        tr("账号 <span style=\"color:%1;\">*</span>").arg(danger_color), card);
     account_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     account_label->setTextFormat(Qt::RichText);
     card_layout->addWidget(account_label);
@@ -163,13 +161,13 @@ void InputView::build_ui() {
     auto* account_field = make_icon_input_field(
         card, QStringLiteral(":/icons/at-sign.svg"), account_edit_);
     card_layout->addWidget(account_field);
-    account_edit_->setPlaceholderText(QStringLiteral("登录账号或邮箱"));
+    account_edit_->setPlaceholderText(tr("登录账号或邮箱"));
 
     card_layout->addSpacing(16);
 
     // ── *密码（必填，带生成 + 可见性按钮） ──
     auto* pwd_label = new QLabel(
-        QStringLiteral("密码 <span style=\"color:#f56363;\">*</span>"), card);
+        tr("密码 <span style=\"color:%1;\">*</span>").arg(danger_color), card);
     pwd_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     pwd_label->setTextFormat(Qt::RichText);
     card_layout->addWidget(pwd_label);
@@ -179,7 +177,7 @@ void InputView::build_ui() {
     generate_button_ = new QPushButton(card);
     generate_button_->setIcon(tinted_icon(QStringLiteral(":/icons/wand-2.svg"), IconRole::Normal));
     generate_button_->setIconSize(QSize(14, 14));
-    generate_button_->setText(QStringLiteral("生成"));
+    generate_button_->setText(tr("生成"));
     generate_button_->setCursor(Qt::PointingHandCursor);
     generate_button_->setFixedHeight(40);
     generate_button_->setProperty("cssClass", QStringLiteral("inlineTextBtn"));
@@ -210,7 +208,7 @@ void InputView::build_ui() {
     strength_bar_->setFixedHeight(4);
     strength_bar_->setProperty("strength", QStringLiteral("weak"));
     strength_row->addWidget(strength_bar_, 1);
-    strength_label_ = new QLabel(QStringLiteral("强度：-"), card);
+    strength_label_ = new QLabel(tr("强度：-"), card);
     strength_label_->setProperty("cssClass", QStringLiteral("caption"));
     strength_row->addWidget(strength_label_);
     card_layout->addLayout(strength_row);
@@ -218,19 +216,19 @@ void InputView::build_ui() {
     card_layout->addSpacing(16);
 
     // ── 网站（可选） ──
-    auto* website_label = new QLabel(QStringLiteral("网站"), card);
+    auto* website_label = new QLabel(tr("网站"), card);
     website_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     card_layout->addWidget(website_label);
     card_layout->addSpacing(6);
     auto* website_field = make_icon_input_field(
         card, QStringLiteral(":/icons/globe.svg"), website_edit_);
     card_layout->addWidget(website_field);
-    website_edit_->setPlaceholderText(QStringLiteral("example.com"));
+    website_edit_->setPlaceholderText(tr("example.com"));
 
     card_layout->addSpacing(16);
 
     // ── 标签（可选，芯片流式输入） ──
-    auto* tag_label = new QLabel(QStringLiteral("标签"), card);
+    auto* tag_label = new QLabel(tr("标签"), card);
     tag_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     card_layout->addWidget(tag_label);
     card_layout->addSpacing(6);
@@ -257,14 +255,16 @@ void InputView::build_ui() {
     card_layout->addSpacing(16);
 
     // ── 备注（可选，markdown 源码） ──
-    auto* note_label = new QLabel(QStringLiteral("备注（markdown）"), card);
+    auto* note_label = new QLabel(tr("备注（markdown）"), card);
     note_label->setProperty("cssClass", QStringLiteral("fieldLabel"));
     card_layout->addWidget(note_label);
     card_layout->addSpacing(6);
     note_edit_ = new QPlainTextEdit(card);
     note_edit_->setPlaceholderText(
-        QStringLiteral("可选：支持 markdown 语法（# 标题、**粗体**、`代码`、- 列表）"));
-    note_edit_->setFixedHeight(96);
+        tr("可选：支持 markdown 语法（# 标题、**粗体**、`代码`、- 列表）"));
+    // 备注框可随内容增长到 240px，超出后内部滚动，避免与小窗口内滚动冲突
+    note_edit_->setMinimumHeight(96);
+    note_edit_->setMaximumHeight(240);
     card_layout->addWidget(note_edit_);
 
     // 错误提示
@@ -291,7 +291,7 @@ void InputView::build_ui() {
     clear_button_ = new QPushButton(card);
     clear_button_->setIcon(tinted_icon(QStringLiteral(":/icons/eraser.svg"), IconRole::Normal));
     clear_button_->setIconSize(QSize(16, 16));
-    clear_button_->setText(QStringLiteral("清除"));
+    clear_button_->setText(tr("清除"));
     clear_button_->setCursor(Qt::PointingHandCursor);
     clear_button_->setFixedHeight(40);
     clear_button_->setProperty("cssClass", QStringLiteral("outline"));
@@ -300,10 +300,10 @@ void InputView::build_ui() {
     save_button_ = new QPushButton(card);
     save_button_->setIcon(tinted_icon(QStringLiteral(":/icons/save.svg"), IconRole::OnPrimary));
     save_button_->setIconSize(QSize(16, 16));
-    save_button_->setText(QStringLiteral("保存条目"));
+    save_button_->setText(tr("保存条目"));
     save_button_->setCursor(Qt::PointingHandCursor);
     save_button_->setFixedHeight(40);
-    apply_primary_button_style(save_button_);
+    save_button_->setProperty("cssClass", QStringLiteral("primary"));
     footer_row->addWidget(save_button_);
     card_layout->addLayout(footer_row);
 
@@ -322,6 +322,9 @@ void InputView::build_ui() {
             this, &InputView::on_password_changed);
     connect(save_button_, &QPushButton::clicked,
             this, &InputView::on_save_clicked);
+    // 密码字段按 Enter 直接触发保存；其余字段保持 Qt 默认 focusNextChild 跳转
+    connect(password_edit_, &QLineEdit::returnPressed,
+            this, &InputView::on_save_clicked);
     connect(clear_button_, &QPushButton::clicked,
             this, &InputView::on_clear_clicked);
 
@@ -329,11 +332,26 @@ void InputView::build_ui() {
     strength_timer_ = new QTimer(this);
     strength_timer_->setSingleShot(true);
     connect(strength_timer_, &QTimer::timeout, this, [this]() {
-        if (password_edit_) update_strength(password_edit_->text());
+        // 异步发起强度评估：QtConcurrent 线程池执行 IPC，finished 回主线程更新 UI。
+        if (!client_ || pending_password_.isEmpty()) {
+            update_strength_ui(core::StrengthEstimate{});
+            return;
+        }
+        const std::string pwd = pending_password_.toStdString();
+        auto* watcher = new QFutureWatcher<core::Result<protocol::EstimateStrengthResponse>>(this);
+        connect(watcher, &QFutureWatcher<core::Result<protocol::EstimateStrengthResponse>>::finished,
+                this, [this, watcher]() {
+            auto r = watcher->result();
+            if (r.ok()) {
+                update_strength_ui(r.value().estimate);
+            }
+            // 失败静默：强度条保持上一次状态，不打扰用户输入
+            watcher->deleteLater();
+        });
+        watcher->setFuture(client_->estimate_strength_async(pwd));
     });
 
-    // 加载已有标签供补全
-    refresh_existing_tags();
+    // 标签补全列表改由 showEvent 首次显示时异步加载（避免构造期同步 IPC）
 }
 
 void InputView::set_password(const QString& password) {
@@ -342,6 +360,15 @@ void InputView::set_password(const QString& password) {
 
 void InputView::focus_first_field() {
     if (entry_name_edit_) entry_name_edit_->setFocus();
+}
+
+void InputView::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    // Task 28：首次显示时异步加载标签补全列表，避免重复加载
+    if (!tags_loaded_) {
+        tags_loaded_ = true;
+        refresh_existing_tags_async();
+    }
 }
 
 void InputView::on_generate_clicked() {
@@ -359,30 +386,44 @@ void InputView::on_toggle_password_clicked() {
 }
 
 void InputView::on_password_changed(const QString& text) {
-    (void)text;
-    // debounce：重启计时器，300ms 内无新输入才真正发起强度评估 IPC
-    if (strength_timer_) strength_timer_->start(300);
+    // 捕获当前文本，debounce 计时器 timeout 时使用；300ms 内无新输入才发起 IPC
+    pending_password_ = text;
+    if (strength_timer_) {
+        if (text.isEmpty()) {
+            // 立即清空强度 UI，避免空密码还显示上一次的强度
+            strength_timer_->stop();
+            update_strength_ui(core::StrengthEstimate{});
+        } else {
+            strength_timer_->start(300);
+        }
+    }
 }
 
 void InputView::update_strength(const QString& password) {
+    // 入口：保留同步签名以兼容旧调用点。实际异步流程通过 on_password_changed
+    // + strength_timer_ timeout 处理。这里仅同步刷新 UI 状态（空密码立即清空）。
+    pending_password_ = password;
+    if (password.isEmpty()) {
+        update_strength_ui(core::StrengthEstimate{});
+    } else if (strength_timer_) {
+        strength_timer_->start(300);
+    }
+}
+
+void InputView::update_strength_ui(const core::StrengthEstimate& estimate) {
     if (!strength_bar_ || !strength_label_) return;
 
-    if (password.isEmpty() || !client_) {
+    // 空密码：重置为初始状态（「强度：-」），不展示评估结果
+    if (pending_password_.isEmpty()) {
         strength_bar_->setValue(0);
         strength_bar_->setProperty("strength", QStringLiteral("weak"));
         strength_bar_->style()->unpolish(strength_bar_);
         strength_bar_->style()->polish(strength_bar_);
-        strength_label_->setText(QStringLiteral("强度：-"));
+        strength_label_->setText(tr("强度：-"));
         strength_label_->setProperty("cssClass", QStringLiteral("caption"));
         strength_label_->style()->unpolish(strength_label_);
         strength_label_->style()->polish(strength_label_);
         return;
-    }
-
-    auto result = client_->estimate_strength(password.toStdString());
-    core::StrengthEstimate estimate;
-    if (result.ok()) {
-        estimate = result.value().estimate;
     }
 
     const int pct = (estimate.bits >= 128) ? 100 : (estimate.bits * 100 / 128);
@@ -399,14 +440,15 @@ void InputView::update_strength(const QString& password) {
     strength_label_->style()->unpolish(strength_label_);
     strength_label_->style()->polish(strength_label_);
     strength_label_->setText(
-        QStringLiteral("强度：%1（%2 bit）").arg(strength_text(estimate.level)).arg(estimate.bits));
+        tr("强度：%1（%2 bit）").arg(strength_text(estimate.level)).arg(estimate.bits));
 }
 
 void InputView::on_save_clicked() {
+    if (saving_) return;  // 防重复点击
     set_error(QString());
 
     if (!client_) {
-        set_error(QStringLiteral("内部错误：IPC 客户端不可用。"));
+        set_error(tr("内部错误：IPC 客户端不可用。"));
         return;
     }
 
@@ -416,17 +458,17 @@ void InputView::on_save_clicked() {
 
     // 必填校验：entry_name / account / password
     if (entry_name.isEmpty()) {
-        set_error(QStringLiteral("条目名不能为空。"));
+        set_error(tr("条目名不能为空。"));
         entry_name_edit_->setFocus();
         return;
     }
     if (account.isEmpty()) {
-        set_error(QStringLiteral("账号不能为空。"));
+        set_error(tr("账号不能为空。"));
         account_edit_->setFocus();
         return;
     }
     if (password.isEmpty()) {
-        set_error(QStringLiteral("密码不能为空。"));
+        set_error(tr("密码不能为空。"));
         password_edit_->setFocus();
         return;
     }
@@ -443,19 +485,31 @@ void InputView::on_save_clicked() {
         entry.tags = tag_input_->selected_tags();
     }
 
-    auto result = client_->add_entry(entry);
-    if (result.ok()) {
-        const int64_t new_id = result.value().entry.id;
-        emit entry_added(new_id);
-        on_clear_clicked();
-        QMessageBox::information(this, QStringLiteral("保存成功"),
-            QStringLiteral("密码条目已保存。"));
-    } else {
-        const QString msg = QString::fromStdString(result.error().what());
-        set_error(msg.isEmpty()
-                      ? QStringLiteral("保存失败。")
-                      : QStringLiteral("保存失败：%1").arg(msg));
-    }
+    // 异步保存：禁用按钮 + 文案改为「保存中…」，回调中恢复
+    saving_ = true;
+    save_button_->setEnabled(false);
+    save_button_->setText(tr("保存中…"));
+
+    auto* watcher = new QFutureWatcher<core::Result<protocol::AddEntryResponse>>(this);
+    connect(watcher, &QFutureWatcher<core::Result<protocol::AddEntryResponse>>::finished,
+            this, [this, watcher]() {
+        saving_ = false;
+        save_button_->setEnabled(true);
+        save_button_->setText(tr("保存条目"));
+
+        auto result = watcher->result();
+        if (result.ok()) {
+            // Task 18.1：用 Toast 替代 QMessageBox::information，非阻塞反馈
+            Toast::show(this, tr("密码条目已保存"));
+            const int64_t new_id = result.value().entry.id;
+            emit entry_added(new_id);
+            on_clear_clicked();
+        } else {
+            set_error(friendly_message(result.error()));
+        }
+        watcher->deleteLater();
+    });
+    watcher->setFuture(client_->add_entry_async(entry));
 }
 
 void InputView::on_clear_clicked() {
@@ -480,11 +534,23 @@ void InputView::set_error(const QString& message) {
 }
 
 void InputView::refresh_existing_tags() {
+    // 同步入口（向后兼容）：实际由 async 版本执行 IPC
+    refresh_existing_tags_async();
+}
+
+void InputView::refresh_existing_tags_async() {
     if (!client_ || !tag_input_) return;
-    auto result = client_->list_tags();
-    if (result.ok()) {
-        tag_input_->set_existing_tags(result.value().tags);
-    }
+    auto* watcher = new QFutureWatcher<core::Result<protocol::ListTagsResponse>>(this);
+    connect(watcher, &QFutureWatcher<core::Result<protocol::ListTagsResponse>>::finished,
+            this, [this, watcher]() {
+        auto result = watcher->result();
+        if (result.ok() && tag_input_) {
+            tag_input_->set_existing_tags(result.value().tags);
+        }
+        // 失败静默：补全列表不可用不影响主流程
+        watcher->deleteLater();
+    });
+    watcher->setFuture(client_->list_tags_async());
 }
 
 }  // namespace pwdvault::ui

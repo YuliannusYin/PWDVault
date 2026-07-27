@@ -6,9 +6,11 @@
 // 处理解锁流程、视图间联动、IPC 断连与主题切换。
 // =============================================================================
 #include "MainWindow.h"
+#include "ErrorMessages.h"
 #include "IconKit.h"
 #include "IpcClient.h"
 #include "Theme.h"
+#include "Version.h"
 #include "views/GeneratorView.h"
 #include "views/InputView.h"
 #include "views/UnlockView.h"
@@ -18,13 +20,19 @@
 #include <QApplication>
 #include <QButtonGroup>
 #include <QCloseEvent>
+#include <QEvent>
+#include <QFontMetrics>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QKeySequence>
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSettings>
+#include <QShortcut>
 #include <QStackedWidget>
 #include <QString>
 #include <QStyle>
@@ -73,12 +81,14 @@ constexpr int kSidebarSettings = 3;
 
 /// 创建带左侧高亮指示条的导航按钮。
 /// 图标由 MainWindow::refresh_nav_icons() 统一着色设置，此处不设图标。
-QPushButton* make_nav_button(const QString& text, QWidget* parent) {
+QPushButton* make_nav_button(const QString& text, const QString& tooltip,
+                             QWidget* parent) {
     auto* btn = new QPushButton(parent);
     btn->setCheckable(true);
     btn->setCursor(Qt::PointingHandCursor);
     btn->setText(text);
     btn->setIconSize(QSize(18, 18));
+    btn->setToolTip(tooltip);
     btn->setProperty("cssClass", QStringLiteral("navItem"));
     // 样式由 QSS 中 QPushButton[cssClass="navItem"] 提供
     return btn;
@@ -104,7 +114,7 @@ MainWindow::MainWindow(IpcClient* client, QWidget* parent)
     // 自定义无边框窗口：移除 Windows 原生标题栏/边框，但保留任务栏图标、
     // Aero Snap（通过 nativeEvent 中的 WM_NCHITTEST 实现）和右键菜单。
     setWindowFlags(Qt::FramelessWindowHint | Qt::Window);
-    setWindowTitle(QStringLiteral("PwdVault - 密码管理器"));
+    setWindowTitle(tr("PwdVault - 密码管理器"));
     // 固定默认尺寸 1200x800。「固定大小」通过 WM_NCHITTEST 阻止边缘调整实现，
     // 而非 setFixedSize / setMaximumSize —— 后两者会一并禁用 Aero Snap 最大化。
     // 这样：① 不能拖边缘调整大小 ② 拖顶栏到屏幕顶部仍可 Aero Snap 最大化。
@@ -176,6 +186,10 @@ MainWindow::MainWindow(IpcClient* client, QWidget* parent)
             this, [this](int64_t) { /* 预留 */ });
     connect(book_view_, &PasswordBookView::entry_count_changed,
             this, &MainWindow::on_entry_count_changed);
+    connect(book_view_, &PasswordBookView::entry_add_requested,
+            this, &MainWindow::on_entry_add_requested);
+    connect(settings_view_, &SettingsView::generate_requested,
+            this, &MainWindow::on_generate_requested_from_history);
 
     if (client_) {
         connect(client_, &IpcClient::disconnected,
@@ -183,6 +197,45 @@ MainWindow::MainWindow(IpcClient* client, QWidget* parent)
         connect(client_, &IpcClient::error_occurred,
                 this, &MainWindow::on_ipc_error);
     }
+
+    // ── 全局快捷键 ──
+    // QShortcut 作为 MainWindow 子对象，存活于主窗口生命周期。
+    // 默认 Qt::WindowShortcut 上下文，仅在主窗口激活时生效，避免与对话框
+    // （如 EditEntryDialog / GeneratorHistoryDialog）的输入冲突。
+    // Ctrl+N → 录入新条目（切换到 InputView 并聚焦首字段）
+    auto* sc_n = new QShortcut(QKeySequence(QStringLiteral("Ctrl+N")), this);
+    connect(sc_n, &QShortcut::activated, this, [this] { on_entry_add_requested(); });
+    // Ctrl+F → 密码本 + 聚焦搜索框
+    auto* sc_f = new QShortcut(QKeySequence(QStringLiteral("Ctrl+F")), this);
+    connect(sc_f, &QShortcut::activated, this, [this] {
+        if (nav_book_btn_) nav_book_btn_->click();
+        if (book_view_) book_view_->focus_search();
+    });
+    // Ctrl+L → 锁定保险库
+    auto* sc_l = new QShortcut(QKeySequence(QStringLiteral("Ctrl+L")), this);
+    connect(sc_l, &QShortcut::activated, this, [this] { on_lock_requested(); });
+    // Ctrl+G → 生成器
+    auto* sc_g = new QShortcut(QKeySequence(QStringLiteral("Ctrl+G")), this);
+    connect(sc_g, &QShortcut::activated, this, [this] {
+        if (nav_generator_btn_) nav_generator_btn_->click();
+    });
+    // Ctrl+1..4 → 切换到对应侧边栏视图（click 触发 on_nav_clicked，已含按钮选中态切换）
+    auto* sc_1 = new QShortcut(QKeySequence(QStringLiteral("Ctrl+1")), this);
+    connect(sc_1, &QShortcut::activated, this, [this] {
+        if (nav_book_btn_) nav_book_btn_->click();
+    });
+    auto* sc_2 = new QShortcut(QKeySequence(QStringLiteral("Ctrl+2")), this);
+    connect(sc_2, &QShortcut::activated, this, [this] {
+        if (nav_input_btn_) nav_input_btn_->click();
+    });
+    auto* sc_3 = new QShortcut(QKeySequence(QStringLiteral("Ctrl+3")), this);
+    connect(sc_3, &QShortcut::activated, this, [this] {
+        if (nav_generator_btn_) nav_generator_btn_->click();
+    });
+    auto* sc_4 = new QShortcut(QKeySequence(QStringLiteral("Ctrl+4")), this);
+    connect(sc_4, &QShortcut::activated, this, [this] {
+        if (nav_settings_btn_) nav_settings_btn_->click();
+    });
 
 #if defined(Q_OS_WIN)
     // 启用 Windows 11 原生窗口圆角（Win10 自动退化为直角）。
@@ -207,12 +260,21 @@ MainWindow::MainWindow(IpcClient* client, QWidget* parent)
     refresh_nav_icons();
     refresh_topbar_icons();
 
-    // 启动流程：查询 vault 状态，若程序密码已启用且已锁定则显示解锁视图
-    if (should_show_unlock()) {
-        show_unlock();
-    } else {
-        if (book_view_) book_view_->refresh();
-        if (settings_view_) settings_view_->refresh_status();
+    // 启动流程：异步查询 vault 状态，若程序密码已启用且已锁定则显示解锁视图，
+    // 否则刷新各视图。结果通过 QFutureWatcher 在主线程接收，避免阻塞 UI。
+    start_initial_flow();
+
+    // ── 自动锁定 ──
+    // 在所有视图创建完成后安装应用级事件过滤器，监听全局鼠标 / 键盘活动。
+    // autolock 的实际启动由 setup_autolock 控制，仅在 minutes > 0 且未锁定时启动。
+    qApp->installEventFilter(this);
+    // SettingsView 在构造时已从 QSettings 读取持久化值并设置 combo 当前项，
+    // 这里直接取 combo 当前值（get_autolock_minutes）作为 timer 初始配置。
+    if (settings_view_) {
+        connect(settings_view_, &SettingsView::autolock_changed,
+                this, &MainWindow::setup_autolock);
+        const int minutes = settings_view_->get_autolock_minutes();
+        setup_autolock(minutes);
     }
 }
 
@@ -329,17 +391,17 @@ void MainWindow::build_tray_icon() {
 
     tray_icon_ = new QSystemTrayIcon(this);
     tray_icon_->setIcon(QIcon(QStringLiteral(":/logo.png")));
-    tray_icon_->setToolTip(QStringLiteral("PwdVault - 密码管理器"));
+    tray_icon_->setToolTip(tr("PwdVault - 密码管理器"));
 
     // 右键菜单
     tray_menu_ = new QMenu(this);
-    tray_menu_->addAction(QStringLiteral("显示/隐藏主窗口"),
+    tray_menu_->addAction(tr("显示/隐藏主窗口"),
                           this, &MainWindow::on_tray_toggle_visible);
     tray_menu_->addSeparator();
-    tray_menu_->addAction(QStringLiteral("锁定保险库"),
+    tray_menu_->addAction(tr("锁定保险库"),
                           this, &MainWindow::on_tray_lock);
     tray_menu_->addSeparator();
-    tray_menu_->addAction(QStringLiteral("退出"),
+    tray_menu_->addAction(tr("退出"),
                           this, &MainWindow::on_tray_quit);
     tray_icon_->setContextMenu(tray_menu_);
 
@@ -419,7 +481,7 @@ void MainWindow::build_sidebar(QWidget* parent) {
                               .pixmap(QSize(28, 28)));
     brand_layout->addWidget(brand_icon);
 
-    auto* brand_label = new QLabel(QStringLiteral("PwdVault"), brand_frame);
+    auto* brand_label = new QLabel(tr("PwdVault"), brand_frame);
     brand_label->setProperty("cssClass", QStringLiteral("brand"));
     brand_layout->addWidget(brand_label);
     brand_layout->addStretch(1);
@@ -437,13 +499,13 @@ void MainWindow::build_sidebar(QWidget* parent) {
     nav_group_->setExclusive(true);
 
     nav_book_btn_ = make_nav_button(
-        QStringLiteral("密码本"), nav_frame);
+        tr("密码本"), tr("密码本 (Ctrl+1)"), nav_frame);
     nav_input_btn_ = make_nav_button(
-        QStringLiteral("录入"), nav_frame);
+        tr("录入"), tr("录入 (Ctrl+2)"), nav_frame);
     nav_generator_btn_ = make_nav_button(
-        QStringLiteral("生成器"), nav_frame);
+        tr("生成器"), tr("生成器 (Ctrl+3)"), nav_frame);
     nav_settings_btn_ = make_nav_button(
-        QStringLiteral("设置"), nav_frame);
+        tr("设置"), tr("设置 (Ctrl+4)"), nav_frame);
 
     nav_group_->addButton(nav_book_btn_, kSidebarBook);
     nav_group_->addButton(nav_input_btn_, kSidebarInput);
@@ -472,7 +534,7 @@ void MainWindow::build_sidebar(QWidget* parent) {
     status_row->addWidget(service_status_dot_);
 
     service_status_label_ = new QLabel(
-        QStringLiteral("服务已连接"), bottom_frame);
+        tr("服务已连接"), bottom_frame);
     service_status_label_->setProperty("cssClass", QStringLiteral("caption"));
     status_row->addWidget(service_status_label_);
     status_row->addStretch(1);
@@ -480,7 +542,7 @@ void MainWindow::build_sidebar(QWidget* parent) {
 
     sidebar_lock_btn_ = new QPushButton(bottom_frame);
     sidebar_lock_btn_->setIconSize(QSize(16, 16));
-    sidebar_lock_btn_->setText(QStringLiteral("锁定保险库"));
+    sidebar_lock_btn_->setText(tr("锁定保险库"));
     sidebar_lock_btn_->setCursor(Qt::PointingHandCursor);
     sidebar_lock_btn_->setFixedHeight(40);
     sidebar_lock_btn_->setProperty("cssClass", QStringLiteral("outline"));
@@ -515,6 +577,10 @@ void MainWindow::build_topbar(QWidget* parent) {
     // 左侧：标题 + 副标题
     topbar_title_ = new QLabel(topbar_frame_);
     topbar_title_->setProperty("cssClass", QStringLiteral("title"));
+    // 限制最大宽度并禁用换行，配合 set_topbar_title 的 elide 截断，
+    // 防止窗口最小化（1200×800）时标题挤压右侧 4 个按钮。
+    topbar_title_->setMaximumWidth(200);
+    topbar_title_->setWordWrap(false);
     topbar_layout->addWidget(topbar_title_);
 
     topbar_subtitle_ = new QLabel(topbar_frame_);
@@ -532,11 +598,11 @@ void MainWindow::build_topbar(QWidget* parent) {
 
     // 右侧：主题切换 + 锁定 + 新增
     theme_toggle_btn_ = make_icon_button(
-        QStringLiteral("切换主题"), topbar_frame_);
+        tr("切换主题"), topbar_frame_);
     topbar_layout->addWidget(theme_toggle_btn_);
 
     topbar_lock_btn_ = make_icon_button(
-        QStringLiteral("锁定保险库"), topbar_frame_);
+        tr("锁定保险库"), topbar_frame_);
     topbar_layout->addWidget(topbar_lock_btn_);
 
     // ── 窗口控制按钮（贴右边缘） ──
@@ -544,11 +610,11 @@ void MainWindow::build_topbar(QWidget* parent) {
     topbar_layout->addSpacing(4);
 
     minimize_btn_ = make_icon_button(
-        QStringLiteral("最小化"), topbar_frame_);
+        tr("最小化"), topbar_frame_);
     topbar_layout->addWidget(minimize_btn_);
 
     close_btn_ = make_icon_button(
-        QStringLiteral("关闭"), topbar_frame_);
+        tr("关闭"), topbar_frame_);
     // 关闭按钮 hover 时使用红色背景，更接近 Windows 原生体验
     close_btn_->setProperty("cssClass", QStringLiteral("closeBtn"));
     topbar_layout->addWidget(close_btn_);
@@ -568,28 +634,38 @@ void MainWindow::build_topbar(QWidget* parent) {
 void MainWindow::update_topbar_for_view(int row) {
     switch (row) {
         case kSidebarBook:
-            topbar_title_->setText(QStringLiteral("密码本"));
+            set_topbar_title(tr("密码本"));
             topbar_subtitle_->setText(QString());
             topbar_count_badge_->show();
             break;
         case kSidebarInput:
-            topbar_title_->setText(QStringLiteral("录入"));
-            topbar_subtitle_->setText(QStringLiteral("新建一条密码记录"));
+            set_topbar_title(tr("录入"));
+            topbar_subtitle_->setText(tr("新建一条密码记录"));
             topbar_count_badge_->hide();
             break;
         case kSidebarGenerator:
-            topbar_title_->setText(QStringLiteral("生成器"));
-            topbar_subtitle_->setText(QStringLiteral("生成高强度随机密码"));
+            set_topbar_title(tr("生成器"));
+            topbar_subtitle_->setText(tr("生成高强度随机密码"));
             topbar_count_badge_->hide();
             break;
         case kSidebarSettings:
-            topbar_title_->setText(QStringLiteral("设置"));
-            topbar_subtitle_->setText(QStringLiteral("版本 3.2.0"));
+            set_topbar_title(tr("设置"));
+            topbar_subtitle_->setText(tr("版本 ") + QStringLiteral(PWDVAULT_VERSION));
             topbar_count_badge_->hide();
             break;
         default:
             break;
     }
+}
+
+void MainWindow::set_topbar_title(const QString& title) {
+    if (!topbar_title_) return;
+    // 用 QFontMetrics elide 截断标题，防止窗口最小化时挤压右侧按钮。
+    // 中文标题较短（如"密码本"约 60-80px）通常不会触发 elide，
+    // 但保留此逻辑以应对未来更长的标题或更小的窗口尺寸。
+    const QFontMetrics fm(topbar_title_->font());
+    topbar_title_->setText(fm.elidedText(title, Qt::ElideRight,
+                                          topbar_title_->maximumWidth()));
 }
 
 // ---------------------------------------------------------------------------
@@ -600,10 +676,10 @@ void MainWindow::update_connection_status() {
     const bool connected = client_ && client_->is_connected();
     if (connected) {
         service_status_dot_->setProperty("cssClass", QStringLiteral("statusDotOk"));
-        service_status_label_->setText(QStringLiteral("服务已连接"));
+        service_status_label_->setText(tr("服务已连接"));
     } else {
         service_status_dot_->setProperty("cssClass", QStringLiteral("statusDotErr"));
-        service_status_label_->setText(QStringLiteral("服务未连接"));
+        service_status_label_->setText(tr("服务未连接"));
     }
     // 切换 dynamic property 后必须 unpolish + polish 才能让 QSS 重新生效
     service_status_dot_->style()->unpolish(service_status_dot_);
@@ -614,20 +690,29 @@ void MainWindow::attempt_reconnect() {
     if (!client_) return;
     if (client_->connect_to_service()) {
         update_connection_status();
-        if (should_show_unlock()) {
-            QMessageBox::information(this, QStringLiteral("重连"),
-                QStringLiteral("已重新连接到 service，但密码库已锁定，请输入程序密码解锁。"));
-            show_unlock();
-            return;
-        }
-        if (book_view_) book_view_->refresh();
-        if (settings_view_) settings_view_->refresh_status();
-        QMessageBox::information(this, QStringLiteral("重连"),
-            QStringLiteral("已重新连接到 service。"));
+        // 异步查询 vault 状态，根据是否锁定决定后续流程
+        // （原同步实现调用 should_show_unlock() → client_->get_vault_status()）
+        auto* watcher = new QFutureWatcher<core::Result<protocol::GetVaultStatusResponse>>(this);
+        connect(watcher, &QFutureWatcher<core::Result<protocol::GetVaultStatusResponse>>::finished,
+                this, [this, watcher]() {
+            auto result = watcher->result();
+            if (result.ok() && result.value().password_enabled && result.value().is_locked) {
+                QMessageBox::information(this, tr("重连"),
+                    tr("已重新连接到 service，但密码库已锁定，请输入程序密码解锁。"));
+                show_unlock();
+            } else {
+                if (book_view_) book_view_->refresh();
+                if (settings_view_) settings_view_->refresh_status();
+                QMessageBox::information(this, tr("重连"),
+                    tr("已重新连接到 service。"));
+            }
+            watcher->deleteLater();
+        });
+        watcher->setFuture(client_->get_vault_status_async());
     } else {
         update_connection_status();
-        QMessageBox::warning(this, QStringLiteral("重连失败"),
-            QStringLiteral("无法连接到 service，请稍后重试或手动启动 service。"));
+        QMessageBox::warning(this, tr("重连失败"),
+            tr("无法连接到 service，请稍后重试或手动启动 service。"));
     }
 }
 
@@ -669,11 +754,38 @@ void MainWindow::refresh_topbar_icons() {
 // 解锁流程
 // ---------------------------------------------------------------------------
 
-bool MainWindow::should_show_unlock() const {
-    if (!client_ || !client_->is_connected()) return false;
-    auto result = client_->get_vault_status();
-    if (!result.ok()) return false;
-    return result.value().password_enabled && result.value().is_locked;
+void MainWindow::start_initial_flow() {
+    if (!client_) {
+        // 无 client，直接尝试刷新
+        if (book_view_) book_view_->refresh();
+        if (settings_view_) settings_view_->refresh_status();
+        starting_up_ = false;
+        return;
+    }
+
+    auto* watcher = new QFutureWatcher<core::Result<protocol::GetVaultStatusResponse>>(this);
+    connect(watcher, &QFutureWatcher<core::Result<protocol::GetVaultStatusResponse>>::finished,
+            this, [this, watcher]() {
+        auto result = watcher->result();
+        starting_up_ = false;
+        if (result.ok()) {
+            const auto& status = result.value();
+            if (status.password_enabled && status.is_locked) {
+                show_unlock();
+            } else {
+                if (book_view_) book_view_->refresh();
+                if (settings_view_) settings_view_->refresh_status();
+            }
+        } else {
+            // IPC 失败：记录日志，但仍尝试刷新（明文模式下也能正常展示）
+            qWarning() << "[PwdVault][MainWindow] get_vault_status failed:"
+                       << QString::fromStdString(result.error().what());
+            if (book_view_) book_view_->refresh();
+            if (settings_view_) settings_view_->refresh_status();
+        }
+        watcher->deleteLater();
+    });
+    watcher->setFuture(client_->get_vault_status_async());
 }
 
 void MainWindow::show_unlock() {
@@ -682,6 +794,11 @@ void MainWindow::show_unlock() {
         unlock_view_->deleteLater();
         unlock_view_ = nullptr;
     }
+
+    // 锁定状态下暂停 autolock_timer_，避免在 UnlockView 模态期间反复触发
+    // （eventFilter 仍会收到事件并尝试 start，但 unlock_view_ != nullptr 时
+    // 不会重置，见 eventFilter 实现）。
+    if (autolock_timer_) autolock_timer_->stop();
 
     unlock_view_ = new UnlockView(client_, this);
     connect(unlock_view_, &UnlockView::unlock_succeeded,
@@ -703,6 +820,12 @@ void MainWindow::on_unlock_succeeded() {
     raise();
     activateWindow();
     update_connection_status();
+
+    // 解锁成功后恢复 autolock_timer_：若用户配置了 minutes > 0 则重新启动。
+    // 与 show_unlock() 中 stop() 配对，保证锁定 / 解锁周期内 timer 状态正确。
+    if (autolock_timer_ && autolock_minutes_ > 0) {
+        autolock_timer_->start(autolock_minutes_ * 60 * 1000);
+    }
 }
 
 void MainWindow::on_unlock_rejected() {
@@ -747,8 +870,25 @@ void MainWindow::on_password_generated(const QString& password) {
 
 void MainWindow::on_entry_count_changed(int count) {
     if (topbar_count_badge_) {
-        topbar_count_badge_->setText(QStringLiteral("%1 条").arg(count));
+        topbar_count_badge_->setText(tr("%1 条").arg(count));
     }
+}
+
+void MainWindow::on_entry_add_requested() {
+    // PasswordBookView 空状态「新建条目」→ 切到 InputView 并聚焦首字段
+    content_stack_->setCurrentIndex(kSidebarInput);
+    if (nav_input_btn_) nav_input_btn_->setChecked(true);
+    update_topbar_for_view(kSidebarInput);
+    refresh_nav_icons();
+    if (input_view_) input_view_->focus_first_field();
+}
+
+void MainWindow::on_generate_requested_from_history() {
+    // GeneratorHistoryDialog 空状态「去生成密码」→ 切到 GeneratorView
+    content_stack_->setCurrentIndex(kSidebarGenerator);
+    if (nav_generator_btn_) nav_generator_btn_->setChecked(true);
+    update_topbar_for_view(kSidebarGenerator);
+    refresh_nav_icons();
 }
 
 void MainWindow::switch_to_view(int row) {
@@ -758,6 +898,8 @@ void MainWindow::switch_to_view(int row) {
     update_topbar_for_view(row);
     if (row == kSidebarBook && book_view_) {
         book_view_->refresh();
+        // 切到密码本后将焦点置于列表，方便键盘上下方向键浏览条目。
+        book_view_->focus_list();
     }
     if (row == kSidebarSettings && settings_view_) {
         settings_view_->refresh_status();
@@ -774,6 +916,8 @@ void MainWindow::on_nav_clicked(int row) {
     refresh_nav_icons();
     if (row == kSidebarBook && book_view_) {
         book_view_->refresh();
+        // 切到密码本后将焦点置于列表，方便键盘上下方向键浏览条目。
+        book_view_->focus_list();
     }
     if (row == kSidebarSettings && settings_view_) {
         settings_view_->refresh_status();
@@ -788,24 +932,40 @@ void MainWindow::on_theme_toggle() {
 }
 
 void MainWindow::on_lock_clicked() {
-    if (!client_) return;
-    auto result = client_->lock();
-    if (result.ok()) {
-        show_unlock();
-    } else {
-        const QString msg = QString::fromStdString(result.error().what());
-        QMessageBox::warning(this, QStringLiteral("锁定失败"),
-            msg.isEmpty() ? QStringLiteral("锁定密码库失败。")
-                          : QStringLiteral("锁定失败：%1").arg(msg));
+    if (!client_) {
+        // 无 client：仍走 UI 锁定流程（切到 UnlockView）
+        on_lock_requested();
+        return;
     }
+
+    auto* watcher = new QFutureWatcher<core::Result<protocol::LockResponse>>(this);
+    connect(watcher, &QFutureWatcher<core::Result<protocol::LockResponse>>::finished,
+            this, [this, watcher]() {
+        auto result = watcher->result();
+        if (result.ok()) {
+            // 锁定成功：切到 UnlockView（与原同步路径一致）
+            on_lock_requested();
+        } else {
+            // 锁定失败：保留原有错误文案逻辑
+            const QString msg = friendly_message(result.error());
+            QMessageBox::warning(this, tr("锁定失败"),
+                msg.isEmpty() ? tr("锁定密码库失败。")
+                              : tr("锁定失败：%1").arg(msg));
+        }
+        watcher->deleteLater();
+    });
+    watcher->setFuture(client_->lock_async());
 }
 
 void MainWindow::on_ipc_disconnected() {
     update_connection_status();
+    // 断连后停止 autolock_timer_，避免在 service 不可用时反复尝试 client_->lock()
+    // 失败。重连成功后由 attempt_reconnect / on_unlock_succeeded 视情况重启。
+    if (autolock_timer_) autolock_timer_->stop();
     const auto answer = QMessageBox::warning(
         this,
-        QStringLiteral("连接断开"),
-        QStringLiteral("与 service 的连接已断开。是否尝试重连？"),
+        tr("连接断开"),
+        tr("与 service 的连接已断开。是否尝试重连？"),
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::Yes);
     if (answer == QMessageBox::Yes) {
@@ -816,6 +976,80 @@ void MainWindow::on_ipc_disconnected() {
 void MainWindow::on_ipc_error(const QString& message) {
     // 新设计无状态栏，错误用 tooltip 或弹窗（这里静默处理，避免打扰）
     (void)message;
+}
+
+// ---------------------------------------------------------------------------
+// 自动锁定
+// ---------------------------------------------------------------------------
+
+void MainWindow::setup_autolock(int minutes) {
+    autolock_minutes_ = minutes;
+
+    // 懒创建 timer：仅首次调用时 new，后续复用
+    if (!autolock_timer_) {
+        autolock_timer_ = new QTimer(this);
+        autolock_timer_->setSingleShot(true);
+        connect(autolock_timer_, &QTimer::timeout, this, [this] {
+            // 锁定状态下（unlock_view_ 已显示）不应触发：可能由边界时序
+            // （如手动锁定后 timer 仍未 stop）引起，直接跳过。
+            if (unlock_view_) return;
+            if (client_ && client_->is_connected()) {
+                // 异步锁定：让 service 清除内存中的 KEK。
+                // 不等回调直接切 UI（on_lock_requested），service 端会很快处理；
+                // 失败仅记录日志，避免在自动锁定路径上弹窗打扰用户。
+                auto* watcher = new QFutureWatcher<core::Result<protocol::LockResponse>>(this);
+                connect(watcher, &QFutureWatcher<core::Result<protocol::LockResponse>>::finished,
+                        this, [this, watcher]() {
+                    auto result = watcher->result();
+                    if (!result.ok()) {
+                        qWarning() << "[PwdVault][Autolock] lock_async failed:"
+                                   << QString::fromStdString(result.error().what());
+                    }
+                    watcher->deleteLater();
+                });
+                watcher->setFuture(client_->lock_async());
+            }
+            // 触发锁定 UI 流程（与 SettingsView「立即锁定」按钮相同路径）：
+            // 显示 UnlockView 模态层。show_unlock 内部会 stop autolock_timer_。
+            on_lock_requested();
+        });
+    }
+
+    // 锁定状态下不启动 timer：unlock_view_ 显示时用户处于解锁模态，
+    // 没有需要计时的活动；解锁成功后 on_unlock_succeeded 会按需重启。
+    if (minutes > 0 && !unlock_view_) {
+        autolock_timer_->start(minutes * 60 * 1000);
+    } else {
+        autolock_timer_->stop();
+    }
+
+    // 持久化：与 SettingsView::on_autolock_changed 双写，键值相同无害。
+    // 此处写入保证 setup_autolock 被外部调用（如未来命令行参数）时也能持久化。
+    QSettings settings(QStringLiteral("PwdVault"), QStringLiteral("Settings"));
+    settings.setValue(QStringLiteral("autolock_minutes"), minutes);
+}
+
+bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
+    // 仅在 autolock 启用且未处于锁定状态时重置倒计时：
+    // - autolock_minutes_ > 0：用户选择了某个分钟数
+    // - autolock_timer_ 非空：setup_autolock 至少调用过一次
+    // - !unlock_view_：当前不在解锁模态（避免在 UnlockView 中输入密码时
+    //   重置 timer 干扰 stop 状态）
+    if (autolock_timer_ && autolock_minutes_ > 0 && !unlock_view_) {
+        switch (event->type()) {
+            case QEvent::MouseMove:
+            case QEvent::KeyPress:
+            case QEvent::Wheel:
+            case QEvent::MouseButtonPress:
+            case QEvent::MouseButtonDblClick:
+                // 任意用户活动重置倒计时为完整 minutes 周期
+                autolock_timer_->start(autolock_minutes_ * 60 * 1000);
+                break;
+            default:
+                break;
+        }
+    }
+    return QMainWindow::eventFilter(obj, event);
 }
 
 }  // namespace pwdvault::ui

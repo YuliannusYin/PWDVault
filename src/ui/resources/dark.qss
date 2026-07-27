@@ -45,7 +45,8 @@ QToolTip {
     color: #e8ecf4;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 6px;
-    padding: 6px 10px;
+    padding: 2px 4px;
+    font-size: 12px;
 }
 
 /* ── 滚动条：纤细低调 ── */
@@ -78,6 +79,39 @@ QScrollBar::add-page, QScrollBar::sub-page {
     background: transparent;
 }
 
+/* ── card 内细线滚动条（cardScroll）──
+   2px 宽细线，上下 margin 14px 避让 card 圆角（border-radius:12px）+ 2px 余量，
+   track 透明，handle 无边框圆角，紧贴 card 右边框内侧不超出圆角。
+   cardScroll 列表自身 padding:0，确保滚动条紧贴 card 右边框。 */
+[cssClass="cardScroll"] {
+    padding: 0;
+}
+[cssClass="cardScroll"] QScrollBar:vertical {
+    background: transparent;
+    width: 2px;
+    margin: 14px 0 14px 0;
+    border: none;
+}
+[cssClass="cardScroll"] QScrollBar::handle:vertical {
+    background: rgba(255, 255, 255, 0.14);
+    border: none;
+    border-radius: 1px;
+    min-height: 32px;
+    margin: 0;
+}
+[cssClass="cardScroll"] QScrollBar::handle:vertical:hover {
+    background: rgba(255, 255, 255, 0.22);
+}
+[cssClass="cardScroll"] QScrollBar::add-line,
+[cssClass="cardScroll"] QScrollBar::sub-line {
+    height: 0;
+    width: 0;
+}
+[cssClass="cardScroll"] QScrollBar::add-page,
+[cssClass="cardScroll"] QScrollBar::sub-page {
+    background: transparent;
+}
+
 /* ── 通用按钮 ── */
 QPushButton {
     background-color: transparent;
@@ -106,6 +140,7 @@ QPushButton[cssClass="primary"] {
     color: #ffffff;
     border: none;
     font-weight: 500;
+    padding: 0 18px;
 }
 QPushButton#primaryButton:hover,
 QPushButton[cssClass="primary"]:hover {
@@ -196,6 +231,30 @@ QLineEdit:hover, QPlainTextEdit:hover, QTextEdit:hover, QComboBox:hover {
 }
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QComboBox:focus {
     border-color: #3b6bff;
+}
+
+/* ── 焦点视觉（键盘导航可见性） ──
+   * { outline: none; } 已屏蔽默认焦点虚线，下面按控件类型补回焦点视觉：
+   - 有边框的控件（QPushButton/QSpinBox/QDoubleSpinBox）：变更 border-color
+   - 无边框的 QCheckBox/QRadioButton：用 outline 重新绘制
+   - 列表/表格/树：1px 实色边框
+   以下 :focus 选择器特异性高于 * { outline: none; }，故 outline 属性会生效。 */
+QPushButton:focus {
+    border-color: #3b6bff;
+}
+QPushButton[cssClass="primary"]:focus {
+    outline: 2px solid #3b6bff;
+    outline-offset: 1px;
+}
+QCheckBox:focus, QRadioButton:focus {
+    outline: 1px solid #3b6bff;
+    outline-offset: 2px;
+}
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border-color: #3b6bff;
+}
+QListWidget:focus, QTableWidget:focus, QTreeView:focus {
+    border: 1px solid #3b6bff;
 }
 QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled {
     color: #4a536a;
@@ -413,8 +472,11 @@ QFrame[cssClass="topbar"] {
 }
 
 /* 模态弹窗 */
+/* border-radius 8px 与 Win11 DWM 主窗口圆角视觉对齐；
+   圆角外区域由 WA_TranslucentBackground 透出主窗口圆角，避免遮罩覆盖桌面。 */
 QFrame[cssClass="modalOverlay"] {
     background-color: rgba(0, 0, 0, 0.55);
+    border-radius: 8px;
 }
 QFrame[cssClass="modal"] {
     background-color: #161e33;
@@ -444,8 +506,14 @@ QFrame[cssClass="infoBox"] {
     border-radius: 8px;
 }
 
-/* ── 列表（QListWidget 用于密码本左侧列表） ── */
-QListWidget {
+/* ── 滚动区域（透明背景，让父容器底色透出） ── */
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+/* ── 列表（QListWidget 用于密码本左侧列表，QListView 用于 delegate 自绘列表） ── */
+QListWidget, QListView {
     background-color: transparent;
     border: none;
     border-radius: 12px;
@@ -891,8 +959,13 @@ QLabel[cssClass="listTagMore"] {
 /* =============================================================================
    Markdown 渲染控件（QTextBrowser）
    ============================================================================= */
-QTextBrowser[cssClass="markdownView"] {
-    background-color: rgba(255, 255, 255, 0.02);
+/* 特异性说明：加 QFrame[cssClass="fieldRow"] > 前缀，使特异性 (0,5,0) 高于
+   QFrame[cssClass="fieldRow"] > QWidget 的 (0,4,0)，避免 markdownView 的
+   #1A2238 背景被后者强制 transparent 覆盖。子规则（h1/code 等）不涉及背景
+   且非 fieldRow 直接子 widget，无需加前缀。 */
+QFrame[cssClass="fieldRow"] > QTextBrowser[cssClass="markdownView"] {
+    /* #1A2238 深蓝底色，与卡片背景 #121829 形成层次，突出 markdown 内容区 */
+    background-color: #1A2238;
     color: #e8ecf4;
     border: 1px solid rgba(255, 255, 255, 0.05);
     border-radius: 6px;
@@ -958,4 +1031,17 @@ QTextBrowser[cssClass="markdownView"] p {
 }
 QTextBrowser[cssClass="markdownView"] .muted {
     color: #8b95a8;
+}
+
+/* =============================================================================
+   透明背景容器（detail_container 等，需让 card 底色透出）
+   ============================================================================= */
+QWidget[cssClass="transparentBg"] {
+    background-color: transparent;
+}
+
+/* 标签输入控件内的 QLineEdit（融入 TagInputWidget 容器） */
+QLineEdit[cssClass="tagInput"] {
+    border: none;
+    background: transparent;
 }

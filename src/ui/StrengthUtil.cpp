@@ -8,17 +8,19 @@
 // =============================================================================
 #include "StrengthUtil.h"
 
+#include <QCoreApplication>
+
 namespace pwdvault::ui {
 
 QString strength_text(core::StrengthLevel level) {
     switch (level) {
-        case core::StrengthLevel::VeryWeak:   return QStringLiteral("很差");
-        case core::StrengthLevel::Weak:       return QStringLiteral("弱");
-        case core::StrengthLevel::Medium:     return QStringLiteral("中");
-        case core::StrengthLevel::Strong:     return QStringLiteral("强");
-        case core::StrengthLevel::VeryStrong:  return QStringLiteral("很强");
+        case core::StrengthLevel::VeryWeak:   return QCoreApplication::translate("StrengthUtil", "很差");
+        case core::StrengthLevel::Weak:       return QCoreApplication::translate("StrengthUtil", "弱");
+        case core::StrengthLevel::Medium:     return QCoreApplication::translate("StrengthUtil", "中");
+        case core::StrengthLevel::Strong:     return QCoreApplication::translate("StrengthUtil", "强");
+        case core::StrengthLevel::VeryStrong:  return QCoreApplication::translate("StrengthUtil", "很强");
     }
-    return QStringLiteral("弱");
+    return QCoreApplication::translate("StrengthUtil", "弱");
 }
 
 QString strength_qss_key(core::StrengthLevel level) {
