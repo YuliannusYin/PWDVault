@@ -15,6 +15,9 @@ __pycache__/
 *.ntvs*
 *.njsproj
 
+# AI assistant context files (local only, not tracked)
+AGENTS.md
+
 # Qt Creator / Qt project files
 *.pro.user*
 *.qbs.user*
