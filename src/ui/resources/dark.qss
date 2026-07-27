@@ -439,8 +439,16 @@ QFrame[cssClass="card"] {
 }
 QFrame[cssClass="cardDanger"] {
     background-color: #121829;
-    border: 1px solid rgba(245, 99, 99, 0.28);
+    border: 1px solid #F85149;
     border-radius: 12px;
+}
+/* 危险操作 card 内所有非按钮文本统一亮红（QPushButton 非 QLabel，不受影响） */
+QFrame[cssClass="cardDanger"] QLabel {
+    color: #F85149;
+}
+/* 危险操作 card 内字段行分隔线统一亮红，覆盖 fieldRow 默认淡灰色 */
+QFrame[cssClass="cardDanger"] QFrame[cssClass="fieldRow"] {
+    border-bottom: 1px solid #F85149;
 }
 /* card 内的普通 QWidget 子容器（add_row 的 left/right_row）必须透明，
    否则会继承全局 QWidget 底色 #0a0e1a，覆盖 card 的 #121829。

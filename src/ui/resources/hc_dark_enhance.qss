@@ -1,0 +1,90 @@
+/* =============================================================================
+   PwdVault - HC Dark Enhance (高对比度增强 · 深色模式)
+   作用：在 dark.qss 基础上，将中性装饰边框改为亮蓝 #3b6bff，提升可见度。
+   不覆盖：语义色边框（danger 红 / warning 黄 / success 绿 / info 蓝等）保留原色。
+   用法：Theme 在 dark.qss 之后追加本片段（high_contrast 开启时）。
+   特异性：本片段使用与基础 qss 相同的选择器，拼接在后即可覆盖 border 属性。
+   ============================================================================= */
+
+/* 通用按钮（primary/icon/navItem 等子类型由更高特异性规则保留 border:none） */
+QPushButton {
+    border: 1px solid #3b6bff;
+}
+
+/* 输入框（inlineEdit 等子类型由更高特异性规则保留 border:none） */
+QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+    border: 1px solid #3b6bff;
+}
+
+/* 卡片 */
+QFrame[cssClass="card"] {
+    border: 1px solid #3b6bff;
+}
+
+/* 侧边栏 / 顶栏分界线 */
+QFrame[cssClass="sidebar"] {
+    border-right: 1px solid #3b6bff;
+}
+QFrame[cssClass="topbar"] {
+    border-bottom: 1px solid #3b6bff;
+}
+
+/* 模态弹窗 */
+QFrame[cssClass="modal"] {
+    border: 1px solid #3b6bff;
+}
+QFrame[cssClass="modalHeader"] {
+    border-bottom: 1px solid #3b6bff;
+}
+QFrame[cssClass="modalFooter"] {
+    border-top: 1px solid #3b6bff;
+}
+QFrame[cssClass="divider"] {
+    border-bottom: 1px solid #3b6bff;
+}
+
+/* 菜单 */
+QMenu {
+    border: 1px solid #3b6bff;
+}
+QMenu::separator {
+    background-color: #3b6bff;
+}
+
+/* 输入框容器 */
+QFrame[cssClass="inputField"] {
+    border: 1px solid #3b6bff;
+}
+
+/* 轮廓按钮 */
+QPushButton[cssClass="outline"] {
+    border: 1px solid #3b6bff;
+}
+
+/* 字段行分隔线 */
+QFrame[cssClass="fieldRow"] {
+    border-bottom: 1px solid #3b6bff;
+}
+
+/* QComboBox 下拉视图 */
+QComboBox QAbstractItemView {
+    border: 1px solid #3b6bff;
+}
+
+/* 表头分隔线 */
+QHeaderView::section {
+    border-bottom: 1px solid #3b6bff;
+}
+
+/* Markdown 视图 */
+QFrame[cssClass="fieldRow"] > QTextBrowser[cssClass="markdownView"] {
+    border: 1px solid #3b6bff;
+}
+QTextBrowser[cssClass="markdownView"] pre {
+    border: 1px solid #3b6bff;
+}
+
+/* 复选框 / 单选框指示器 */
+QCheckBox::indicator, QRadioButton::indicator {
+    border: 1px solid #3b6bff;
+}

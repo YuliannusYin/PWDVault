@@ -22,6 +22,8 @@ class Theme : public QObject {
     Q_OBJECT
 public:
     /// 主题模式。System 暂时按 Dark 处理（占位）。
+    /// 高对比度独立于主题模式（见 is_high_contrast / set_high_contrast），
+    /// 开启后在当前主题基础上增强中性边框可见度，不改变主题本身。
     enum class Mode {
         Dark,
         Light,
@@ -47,19 +49,30 @@ public:
     /// 当前是否为深色主题。
     static bool is_dark();
 
+    /// 高对比度模式是否开启（独立于主题模式，增强中性边框可见度）。
+    static bool is_high_contrast();
+
+    /// 开启/关闭高对比度模式，自动持久化并即时刷新样式表。
+    static void set_high_contrast(bool enabled);
+
 signals:
     /// 主题变化时触发（仅对实例化对象生效，主要供 MainWindow 监听）。
     void theme_changed(Mode new_mode);
+    /// 高对比度开关变化时触发（供 SettingsView 同步复选框状态）。
+    void high_contrast_changed(bool enabled);
 
 private:
     explicit Theme(QObject* parent = nullptr);
 
     static Theme* instance_;
     static Mode current_mode_;
+    static bool high_contrast_;
 
     void apply_mode(Mode mode);
     void persist(Mode mode);
     Mode load_persisted() const;
+    void persist_hc(bool enabled);
+    bool load_persisted_hc() const;
 };
 
 }  // namespace pwdvault::ui

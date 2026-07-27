@@ -20,6 +20,7 @@
 #include <QWidget>
 
 class QButtonGroup;
+class QCheckBox;
 class QComboBox;
 class QFrame;
 class QLabel;
@@ -130,6 +131,7 @@ private:
     QPushButton* theme_light_btn_ = nullptr;
     QPushButton* theme_dark_btn_ = nullptr;
     QPushButton* theme_system_btn_ = nullptr;
+    QCheckBox* hc_checkbox_ = nullptr;
 
     // 存储区
     QLabel* storage_path_label_ = nullptr;

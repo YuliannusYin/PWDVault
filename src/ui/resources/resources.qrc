@@ -2,6 +2,8 @@
   <qresource prefix="/">
     <file>dark.qss</file>
     <file>light.qss</file>
+    <file>hc_dark_enhance.qss</file>
+    <file>hc_light_enhance.qss</file>
     <file>logo.png</file>
     <file alias="icons/alert-circle.svg">icons/alert-circle.svg</file>
     <file alias="icons/at-sign.svg">icons/at-sign.svg</file>
@@ -30,6 +32,8 @@
     <file alias="icons/moon.svg">icons/moon.svg</file>
     <file alias="icons/palette.svg">icons/palette.svg</file>
     <file alias="icons/pencil.svg">icons/pencil.svg</file>
+    <file alias="icons/pin.svg">icons/pin.svg</file>
+    <file alias="icons/pin-off.svg">icons/pin-off.svg</file>
     <file alias="icons/plus.svg">icons/plus.svg</file>
     <file alias="icons/refresh-cw.svg">icons/refresh-cw.svg</file>
     <file alias="icons/save.svg">icons/save.svg</file>

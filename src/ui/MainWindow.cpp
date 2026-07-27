@@ -61,6 +61,18 @@ constexpr int DWMWCP_DONOTROUND = 1;
 constexpr int DWMWCP_ROUND      = 2;
 constexpr int DWMWCP_ROUNDSMALL = 3;
 
+/// DWMWA_BORDER_COLOR：设置 DWM 窗口边框颜色（Win11 22000+）。
+/// Win10 头文件无此定义，手写避免编译失败；运行时调用失败静默忽略。
+#ifndef DWMWA_BORDER_COLOR
+constexpr DWORD DWMWA_BORDER_COLOR = 34;
+#endif
+/// DWMWA_COLOR_DEFAULT：还原 DWM 属性为系统默认值。
+/// 用于 HC 关闭时把边框色还原回系统默认（透明/强调色）。
+/// 用宏而非 constexpr，与 SDK 风格一致，避免 COLORREF 类型识别问题。
+#ifndef DWMWA_COLOR_DEFAULT
+#define DWMWA_COLOR_DEFAULT 0xFFFFFFFF
+#endif
+
 /// 启用 Windows 11 原生窗口圆角（系统默认半径，约 8px）。
 /// Win10 上调用会失败但不报错，自动退化为直角。
 void enable_win11_rounded_corners(HWND hwnd) {
@@ -250,6 +262,14 @@ MainWindow::MainWindow(IpcClient* client, QWidget* parent)
     HWND hwnd = reinterpret_cast<HWND>(winId());
     LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
     SetWindowLongPtr(hwnd, GWL_STYLE, style | WS_MINIMIZEBOX);
+
+    // 应用窗口外缘边框颜色（HC 开启时按主题模式着色），并监听主题/HC 变化
+    // 即时刷新。DWMWA_BORDER_COLOR 仅 Win11 22000+ 支持，Win10 静默退化。
+    apply_window_border();
+    if (auto* t = Theme::instance()) {
+        connect(t, &Theme::theme_changed, this, [this](Theme::Mode) { apply_window_border(); });
+        connect(t, &Theme::high_contrast_changed, this, [this](bool) { apply_window_border(); });
+    }
 #endif
 
     // 构建系统托盘（关闭按钮 → 最小化到托盘；托盘单击切换显隐）
@@ -596,10 +616,11 @@ void MainWindow::build_topbar(QWidget* parent) {
 
     topbar_layout->addStretch(1);
 
-    // 右侧：主题切换 + 锁定 + 新增
-    theme_toggle_btn_ = make_icon_button(
-        tr("切换主题"), topbar_frame_);
-    topbar_layout->addWidget(theme_toggle_btn_);
+    // 右侧：窗口置顶 + 锁定
+    pin_btn_ = make_icon_button(
+        tr("窗口置顶"), topbar_frame_);
+    pin_btn_->setCheckable(true);
+    topbar_layout->addWidget(pin_btn_);
 
     topbar_lock_btn_ = make_icon_button(
         tr("锁定保险库"), topbar_frame_);
@@ -621,8 +642,8 @@ void MainWindow::build_topbar(QWidget* parent) {
 
     layout->addWidget(topbar_frame_);
 
-    connect(theme_toggle_btn_, &QPushButton::clicked,
-            this, &MainWindow::on_theme_toggle);
+    connect(pin_btn_, &QPushButton::clicked,
+            this, &MainWindow::on_pin_clicked);
     connect(topbar_lock_btn_, &QPushButton::clicked,
             this, &MainWindow::on_lock_clicked);
     connect(minimize_btn_, &QPushButton::clicked,
@@ -733,12 +754,14 @@ void MainWindow::refresh_nav_icons() {
 }
 
 void MainWindow::refresh_topbar_icons() {
-    // 主题切换按钮：深色时显示太阳（点击切到浅色），浅色时显示月亮
-    const QString theme_svg = Theme::is_dark()
-        ? QStringLiteral(":/icons/sun.svg")
-        : QStringLiteral(":/icons/moon.svg");
-    if (theme_toggle_btn_)
-        theme_toggle_btn_->setIcon(tinted_icon(theme_svg, IconRole::Normal));
+    // 窗口置顶按钮：未置顶=垂直图钉（Normal 灰），已置顶=倾斜填色图钉（Active 蓝）
+    if (pin_btn_) {
+        const QString pin_svg = is_pinned_
+            ? QStringLiteral(":/icons/pin-off.svg")
+            : QStringLiteral(":/icons/pin.svg");
+        const IconRole role = is_pinned_ ? IconRole::Active : IconRole::Normal;
+        pin_btn_->setIcon(tinted_icon(pin_svg, role));
+    }
     if (topbar_lock_btn_)
         topbar_lock_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/lock.svg"), IconRole::Normal));
     if (minimize_btn_)
@@ -748,6 +771,27 @@ void MainWindow::refresh_topbar_icons() {
         close_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/x.svg"), IconRole::Normal));
     if (sidebar_lock_btn_)
         sidebar_lock_btn_->setIcon(tinted_icon(QStringLiteral(":/icons/lock.svg"), IconRole::Normal));
+}
+
+void MainWindow::apply_window_border() {
+#if defined(Q_OS_WIN)
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (!hwnd) return;
+
+    // HC 开启：沿用控件边框色 —— 深色=亮蓝 #3b6bff，浅色=纯黑 #000000。
+    // HC 关闭：还原系统默认（DWMWA_COLOR_DEFAULT）。
+    // COLORREF 格式为 0x00BBGGRR，用 RGB() 宏避免端序手算错误。
+    COLORREF color = DWMWA_COLOR_DEFAULT;
+    if (Theme::is_high_contrast()) {
+        color = Theme::is_dark()
+            ? RGB(0x3b, 0x6b, 0xff)   // 亮蓝 #3b6bff
+            : RGB(0x00, 0x00, 0x00);  // 纯黑 #000000
+    }
+    // DWMWA_BORDER_COLOR 仅 Win11 22000+ 支持；Win10/早期 Win11 调用失败，
+    // DwmSetWindowAttribute 返回失败 HRESULT，静默忽略，无副作用。
+    ::DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR,
+                            &color, sizeof(color));
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -924,10 +968,21 @@ void MainWindow::on_nav_clicked(int row) {
     }
 }
 
-void MainWindow::on_theme_toggle() {
-    Theme::toggle();
-    // 主题切换后所有图标颜色都变化，需全部重新着色
-    refresh_nav_icons();
+void MainWindow::on_pin_clicked() {
+    is_pinned_ = !is_pinned_;
+#if defined(Q_OS_WIN)
+    // Windows：用 SetWindowPos 直接修改 HWND_EX_TOPMOST，避免 setWindowFlag
+    // 重建窗口导致的可见闪烁。flags 仅改 Z 序与 topmost，不动尺寸/位置。
+    const HWND insert_after = is_pinned_ ? HWND_TOPMOST : HWND_NOTOPMOST;
+    const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+    ::SetWindowPos(reinterpret_cast<HWND>(winId()), insert_after,
+                   0, 0, 0, 0, flags);
+#else
+    // 非 Windows 回退：setWindowFlag 会重建窗口，可能闪一下
+    setWindowFlag(Qt::WindowStaysOnTopHint, is_pinned_);
+    show();
+#endif
+    // 同步图标（按钮 checked 态由 QAbstractButton::clicked 自动切换，无需手动 setChecked）
     refresh_topbar_icons();
 }
 
